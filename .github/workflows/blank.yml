@@ -1,4 +1,4 @@
-name: Build Earth Kernel (LineageOS 24.0 + KSU-Next + SUSFS)
+name: Build Earth-Only Kernel (LineageOS 24.0 + KSU-Next + SUSFS + Performance)
 
 on:
   workflow_dispatch:
@@ -14,22 +14,83 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves zip python3 cpio wget git clang lld llvm
 
-      - name: Clone Kernel, KernelSU-Next, SUSFS & AnyKernel3
+      - name: Clone & Patch Kernel (KSU-Next + SUSFS + Earth-Only Tweaks)
         run: |
           git clone --depth=1 -b lineage-24.0 https://github.com/LineageOS/android_kernel_xiaomi_earth.git kernel
           cd kernel
+
+          # 1. KernelSU-Next (legacy)
           git clone --depth=1 -b legacy https://github.com/KernelSU-Next/KernelSU-Next.git KernelSU-Next
           ln -s ../KernelSU-Next/kernel drivers/kernelsu
           echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
           echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
 
+          # 2. SUSFS (kernel-4.19)
           git clone --depth=1 -b kernel-4.19 https://gitlab.com/simonpunk/susfs4ksu.git /tmp/susfs4ksu
           cp -r /tmp/susfs4ksu/kernel_patches/fs/* fs/
           cp -r /tmp/susfs4ksu/kernel_patches/include/linux/* include/linux/
           patch -p1 --forward < /tmp/susfs4ksu/kernel_patches/50_add_susfs_in_kernel-4.19.patch || true
           rm -rf /tmp/susfs4ksu
+          find . -name "*.rej" -delete -o -name "*.orig" -delete
 
+          # 3. Apply KSU-Next manual hooks & SUSFS struct/namespace fixes
+          python3 - << 'PY'
+          def patch_file(path, old, new):
+              with open(path, "r") as f:
+                  s = f.read()
+              assert old in s, f"Pattern not found in {path}"
+              with open(path, "w") as f:
+                  f.write(s.replace(old, new, 1))
+
+          # fs/exec.c
+          patch_file("fs/exec.c",
+              "static int do_execveat_common(int fd, struct filename *filename,\n\t\t\t      struct user_arg_ptr argv,\n\t\t\t      struct user_arg_ptr envp,\n\t\t\t      int flags)\n{",
+              "#ifdef CONFIG_KSU\nextern bool ksu_execveat_hook __read_mostly;\nextern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags);\nextern int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags);\n#endif\nstatic int do_execveat_common(int fd, struct filename *filename,\n\t\t\t      struct user_arg_ptr argv,\n\t\t\t      struct user_arg_ptr envp,\n\t\t\t      int flags)\n{\n#ifdef CONFIG_KSU\n\tif (unlikely(ksu_execveat_hook))\n\t\tksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);\n\telse\n\t\tksu_handle_execveat_sucompat(&fd, &filename, &argv, &envp, &flags);\n#endif")
+
+          # fs/open.c
+          patch_file("fs/open.c",
+              "long do_faccessat(int dfd, const char __user *filename, int mode)\n{",
+              "#ifdef CONFIG_KSU\nextern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *flags);\n#endif\nlong do_faccessat(int dfd, const char __user *filename, int mode)\n{\n#ifdef CONFIG_KSU\n\tksu_handle_faccessat(&dfd, &filename, &mode, NULL);\n#endif")
+
+          # fs/read_write.c
+          patch_file("fs/read_write.c",
+              "ssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)\n{\n\tssize_t ret;",
+              "#ifdef CONFIG_KSU\nextern bool ksu_vfs_read_hook __read_mostly;\nextern int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr, size_t *count_ptr, loff_t **pos);\n#endif\nssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)\n{\n\tssize_t ret;\n#ifdef CONFIG_KSU\n\tif (unlikely(ksu_vfs_read_hook))\n\t\tksu_handle_vfs_read(&file, &buf, &count, &pos);\n#endif")
+
+          # fs/stat.c
+          patch_file("fs/stat.c",
+              "int vfs_statx(int dfd, const char __user *filename, int flags,\n\t      struct kstat *stat, u32 request_mask)\n{",
+              "#ifdef CONFIG_KSU\nextern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);\n#endif\nint vfs_statx(int dfd, const char __user *filename, int flags,\n\t      struct kstat *stat, u32 request_mask)\n{\n#ifdef CONFIG_KSU\n\tksu_handle_stat(&dfd, &filename, &flags);\n#endif")
+
+          # kernel/reboot.c
+          patch_file("kernel/reboot.c",
+              "SYSCALL_DEFINE4(reboot, int, magic1, int, magic2, unsigned int, cmd,\n\t\tvoid __user *, arg)\n{",
+              "#ifdef CONFIG_KSU\nextern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user **arg);\n#endif\nSYSCALL_DEFINE4(reboot, int, magic1, int, magic2, unsigned int, cmd,\n\t\tvoid __user *, arg)\n{\n#ifdef CONFIG_KSU\n\tksu_handle_sys_reboot(magic1, magic2, cmd, &arg);\n#endif")
+
+          # include/linux/mount.h
+          patch_file("include/linux/mount.h",
+              "\tANDROID_KABI_RESERVE(4);\n} __randomize_layout;",
+              "#ifdef CONFIG_KSU_SUSFS\n\tANDROID_KABI_USE(4, u64 susfs_mnt_id_backup);\n#else\n\tANDROID_KABI_RESERVE(4);\n#endif\n} __randomize_layout;")
+
+          # include/linux/sched.h
+          patch_file("include/linux/sched.h",
+              "\tANDROID_KABI_RESERVE(8);",
+              "#ifdef CONFIG_KSU_SUSFS\n\tANDROID_KABI_USE(8, u64 susfs_last_fake_mnt_id);\n#else\n\tANDROID_KABI_RESERVE(8);\n#endif")
+
+          # fs/proc/task_mmu.c
+          patch_file("fs/proc/task_mmu.c",
+              "#include <linux/pkeys.h>",
+              "#include <linux/pkeys.h>\n#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT\n#include <linux/susfs_def.h>\n#endif")
+
+          # fs/namespace.c
+          patch_file("fs/namespace.c",
+              "#include <linux/fs_context.h>",
+              "#include <linux/fs_context.h>\n#if defined(CONFIG_KSU_SUSFS_SUS_MOUNT) || defined(CONFIG_KSU_SUSFS_TRY_UMOUNT)\n#include <linux/susfs_def.h>\n#endif")
+          PY
+
+          # 4. Defconfig (KSU-Next, SUSFS, Gaming, Network, Memory & Battery)
           cat << 'EOF' >> arch/arm64/configs/earth_defconfig
+          # Root & Hiding
           CONFIG_KSU=y
           CONFIG_KSU_MANUAL_HOOK=y
           CONFIG_KSU_KPROBE_HOOKS=n
@@ -41,16 +102,25 @@ jobs:
           CONFIG_KSU_SUSFS_ENABLE_LOG=y
           CONFIG_KSU_SUSFS_SUS_SU=n
           CONFIG_SECURITYFS=y
+
+          # Network & Gaming Latency
           CONFIG_TCP_CONG_ADVANCED=y
           CONFIG_TCP_CONG_BBR=y
+          CONFIG_TCP_CONG_WESTWOOD=y
           CONFIG_DEFAULT_TCP_CONG="bbr"
           CONFIG_NET_SCH_FQ=y
+
+          # Memory, ZRAM, Performance & Battery
           CONFIG_ZRAM=y
+          CONFIG_ZSMALLOC=y
           CONFIG_CRYPTO_LZ4=y
           CONFIG_CRYPTO_ZSTD=y
+          CONFIG_CLEANCACHE=y
+          CONFIG_FRONTSWAP=y
           CONFIG_CPU_FREQ_DEFAULT_GOV_SCHEDUTIL=y
           CONFIG_NO_HZ_IDLE=y
           CONFIG_HZ_250=y
+          CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y
           EOF
 
       - name: Setup GCC Binutils
@@ -76,12 +146,16 @@ jobs:
             OBJCOPY=llvm-objcopy \
             OBJDUMP=llvm-objdump \
             STRIP=llvm-strip \
+            KCFLAGS="-Wno-error" \
             Image.gz-dtb
 
-      - name: Package AnyKernel3
+      - name: Package AnyKernel3 (Redmi 12C / earth only)
         run: |
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git AnyKernel3
-          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' AnyKernel3/anykernel.sh
+          sed -i 's/do.devicecheck=1/do.devicecheck=1/g' AnyKernel3/anykernel.sh
+          sed -i 's/device.name1=maguro/device.name1=earth/g' AnyKernel3/anykernel.sh
+          sed -i 's/device.name2=toro/device.name2=aether/g' AnyKernel3/anykernel.sh
+          sed -i 's/device.name3=/device.name3=Redmi 12C/g' AnyKernel3/anykernel.sh
           sed -i 's|block=/dev/block/platform/omap/omap_hsmmc.0/by-name/boot;|block=/dev/block/by-name/boot;|g' AnyKernel3/anykernel.sh
           cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
           if [ -f kernel/out/arch/arm64/boot/dtbo.img ]; then
