@@ -1,0 +1,97 @@
+name: Build Earth Kernel (LineageOS 24.0 + KSU-Next + SUSFS)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves zip python3 cpio wget git clang lld llvm
+
+      - name: Clone Kernel, KernelSU-Next, SUSFS & AnyKernel3
+        run: |
+          git clone --depth=1 -b lineage-24.0 https://github.com/LineageOS/android_kernel_xiaomi_earth.git kernel
+          cd kernel
+          git clone --depth=1 -b legacy https://github.com/KernelSU-Next/KernelSU-Next.git KernelSU-Next
+          ln -s ../KernelSU-Next/kernel drivers/kernelsu
+          echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
+          echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
+
+          git clone --depth=1 -b kernel-4.19 https://gitlab.com/simonpunk/susfs4ksu.git /tmp/susfs4ksu
+          cp -r /tmp/susfs4ksu/kernel_patches/fs/* fs/
+          cp -r /tmp/susfs4ksu/kernel_patches/include/linux/* include/linux/
+          patch -p1 --forward < /tmp/susfs4ksu/kernel_patches/50_add_susfs_in_kernel-4.19.patch || true
+          rm -rf /tmp/susfs4ksu
+
+          cat << 'EOF' >> arch/arm64/configs/earth_defconfig
+          CONFIG_KSU=y
+          CONFIG_KSU_MANUAL_HOOK=y
+          CONFIG_KSU_KPROBE_HOOKS=n
+          CONFIG_KSU_SUSFS=y
+          CONFIG_KSU_SUSFS_SUS_PATH=y
+          CONFIG_KSU_SUSFS_SUS_MOUNT=y
+          CONFIG_KSU_SUSFS_TRY_UMOUNT=y
+          CONFIG_KSU_SUSFS_SPOOF_UNAME=y
+          CONFIG_KSU_SUSFS_ENABLE_LOG=y
+          CONFIG_KSU_SUSFS_SUS_SU=n
+          CONFIG_SECURITYFS=y
+          CONFIG_TCP_CONG_ADVANCED=y
+          CONFIG_TCP_CONG_BBR=y
+          CONFIG_DEFAULT_TCP_CONG="bbr"
+          CONFIG_NET_SCH_FQ=y
+          CONFIG_ZRAM=y
+          CONFIG_CRYPTO_LZ4=y
+          CONFIG_CRYPTO_ZSTD=y
+          CONFIG_CPU_FREQ_DEFAULT_GOV_SCHEDUTIL=y
+          CONFIG_NO_HZ_IDLE=y
+          CONFIG_HZ_250=y
+          EOF
+
+      - name: Setup GCC Binutils
+        run: |
+          git clone --depth=1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 -b master toolchain/gcc64
+          git clone --depth=1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 -b master toolchain/gcc32
+
+      - name: Compile Kernel
+        run: |
+          export PATH="$PWD/toolchain/gcc64/bin:$PWD/toolchain/gcc32/bin:$PATH"
+          cd kernel
+          make O=out ARCH=arm64 earth_defconfig
+          make -j$(nproc --all) O=out \
+            ARCH=arm64 \
+            SUBARCH=arm64 \
+            CC=clang \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-android- \
+            CROSS_COMPILE_ARM32=arm-linux-androideabi- \
+            LD=ld.lld \
+            AR=llvm-ar \
+            NM=llvm-nm \
+            OBJCOPY=llvm-objcopy \
+            OBJDUMP=llvm-objdump \
+            STRIP=llvm-strip \
+            Image.gz-dtb
+
+      - name: Package AnyKernel3
+        run: |
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git AnyKernel3
+          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' AnyKernel3/anykernel.sh
+          sed -i 's|block=/dev/block/platform/omap/omap_hsmmc.0/by-name/boot;|block=/dev/block/by-name/boot;|g' AnyKernel3/anykernel.sh
+          cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
+          if [ -f kernel/out/arch/arm64/boot/dtbo.img ]; then
+            cp kernel/out/arch/arm64/boot/dtbo.img AnyKernel3/
+          fi
+          cd AnyKernel3
+          zip -r9 ../Earth-Lineage24-KSUNext-SUSFS.zip . -x ".git*" "README.md" "*placeholder"
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Earth-Lineage24-KSUNext-SUSFS
+          path: Earth-Lineage24-KSUNext-SUSFS.zip
