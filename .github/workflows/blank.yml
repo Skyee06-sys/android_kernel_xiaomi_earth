@@ -33,46 +33,14 @@ jobs:
           rm -rf /tmp/susfs4ksu
           find . -name "*.rej" -delete -o -name "*.orig" -delete
 
-          # 2b. WireGuard (compat module for kernels < 5.6; earth is 4.19)
-          git clone --depth=1 https://github.com/WireGuard/wireguard-linux-compat.git /tmp/wireguard-linux-compat
-          cp -r /tmp/wireguard-linux-compat/src net/wireguard
-          rm -rf /tmp/wireguard-linux-compat net/wireguard/tests
-          mv net/wireguard/Kbuild net/wireguard/Makefile
-          sed -i '/^obj-$(CONFIG_NETFILTER).*+=/a obj-$(CONFIG_WIREGUARD) += wireguard/' net/Makefile
-          sed -i '/^if INET$/a source "net/wireguard/Kconfig"' net/Kconfig
-
-          # The earth kernel backports ktime_get_coarse_boottime_ns and
-          # dst_cache_reset_now; WireGuard's version-gated compat would redefine
-          # them (compile error). Guard those compat definitions when the kernel
-          # already provides the symbols.
-          python3 - << 'WGEOF'
-          compat = "net/wireguard/compat/compat.h"
-          s = open(compat).read()
-          def wrap_func(s, signature, reason):
-              if signature not in s or ("#if 0 /* " + reason + " */") in s:
-                  return s
-              i = s.index(signature)
-              ob = s.index("{", i + len(signature))
-              depth = 0
-              j = ob
-              while j < len(s):
-                  if s[j] == "{":
-                      depth += 1
-                  elif s[j] == "}":
-                      depth -= 1
-                      if depth == 0:
-                          break
-                  j += 1
-              return s[:i] + "#if 0 /* " + reason + " */\n" + s[i:j+1] + "\n#endif /* " + reason + " */" + s[j+1:]
-          tk = open("include/linux/timekeeping.h").read()
-          if "ktime_get_coarse_boottime_ns" in tk:
-              s = wrap_func(s, "static inline u64 ktime_get_coarse_boottime_ns(void)", "kernel provides ktime_get_coarse_boottime_ns")
-          dc = open("include/net/dst_cache.h").read()
-          if "dst_cache_reset_now" in dc:
-              s = wrap_func(s, "static inline void dst_cache_reset_now(struct dst_cache *dst_cache)", "kernel provides dst_cache_reset_now")
-          open(compat, "w").write(s)
-          print("WireGuard compat backport guards applied")
-          WGEOF
+          # 2b. WireGuard: earth already ships WireGuard in-tree at
+          # drivers/net/wireguard (v1.0.0, wired via drivers/net/{Makefile,Kconfig}).
+          # It is the modern, already-backported driver (uses the kernel's
+          # ktime_get_coarse_boottime_ns / dst_cache_reset_now and selects its own
+          # crypto libs), so NO compat layer is needed. We only enable it via
+          # CONFIG_WIREGUARD=y in the defconfig below. Adding a second copy at
+          # net/wireguard would build the driver twice and duplicate every symbol
+          # at link time, so we deliberately do not clone wireguard-linux-compat.
 
           # 3. Apply KSU-Next manual hooks & SUSFS struct/namespace fixes
           python3 - << 'PY'
@@ -186,7 +154,7 @@ jobs:
           CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y
 
           # --- Added features: network, governors, I/O, memory, filesystems ---
-          # WireGuard VPN (source integrated in step 2b)
+          # WireGuard VPN (already in-tree at drivers/net/wireguard; just enable it)
           CONFIG_WIREGUARD=y
           # Tethering bypass (TTL/HL targets), ipset, extra TCP congestion controls
           CONFIG_IP_NF_TARGET_TTL=y
