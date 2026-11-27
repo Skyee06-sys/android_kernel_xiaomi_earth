@@ -36,7 +36,7 @@ jobs:
           # 2b. WireGuard (compat module for kernels < 5.6; earth is 4.19)
           git clone --depth=1 https://github.com/WireGuard/wireguard-linux-compat.git /tmp/wireguard-linux-compat
           cp -r /tmp/wireguard-linux-compat/src net/wireguard
-          rm -rf /tmp/wireguard-linux-compat net/wireguard/tests net/wireguard/selftest
+          rm -rf /tmp/wireguard-linux-compat net/wireguard/tests
           sed -i '/^obj-$(CONFIG_NETFILTER).*+=/a obj-$(CONFIG_WIREGUARD) += wireguard/' net/Makefile
           sed -i '/^if INET$/a source "net/wireguard/Kconfig"' net/Kconfig
 
