@@ -212,6 +212,7 @@ jobs:
           export PATH="$PWD/toolchain/gcc64/bin:$PWD/toolchain/gcc32/bin:$PATH"
           cd kernel
           make O=out ARCH=arm64 earth_defconfig
+          set -o pipefail
           make -j$(nproc --all) O=out \
             ARCH=arm64 \
             SUBARCH=arm64 \
@@ -226,7 +227,16 @@ jobs:
             OBJDUMP=llvm-objdump \
             STRIP=llvm-strip \
             KCFLAGS="-Wno-error" \
-            Image.gz-dtb
+            Image.gz-dtb 2>&1 | tee /tmp/compile.log || {
+              echo "::error title=Kernel compile failed::error lines extracted below"
+              grep -nE "error:|fatal error|undefined symbol|undefined reference|No rule to make target|Error [0-9]" /tmp/compile.log | head -25 | while IFS= read -r l; do
+                printf '::error title=Compile error::%s\n' "$l"
+              done
+              tail -n 15 /tmp/compile.log | while IFS= read -r l; do
+                printf '::error title=Compile tail::%s\n' "$l"
+              done
+              exit 1
+            }
 
       - name: Package AnyKernel3 (Redmi 12C / earth only)
         run: |
