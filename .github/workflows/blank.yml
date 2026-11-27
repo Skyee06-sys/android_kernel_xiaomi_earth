@@ -37,6 +37,7 @@ jobs:
           git clone --depth=1 https://github.com/WireGuard/wireguard-linux-compat.git /tmp/wireguard-linux-compat
           cp -r /tmp/wireguard-linux-compat/src net/wireguard
           rm -rf /tmp/wireguard-linux-compat net/wireguard/tests
+          mv net/wireguard/Kbuild net/wireguard/Makefile
           sed -i '/^obj-$(CONFIG_NETFILTER).*+=/a obj-$(CONFIG_WIREGUARD) += wireguard/' net/Makefile
           sed -i '/^if INET$/a source "net/wireguard/Kconfig"' net/Kconfig
 
@@ -262,9 +263,10 @@ jobs:
             KCFLAGS="-Wno-error" \
             Image.gz-dtb 2>&1 | tee /tmp/compile.log || {
               echo "::error title=Kernel compile failed::error lines extracted below"
-              grep -nE "error:|fatal error|undefined symbol|undefined reference|No rule to make target|Error [0-9]" /tmp/compile.log | head -25 | while IFS= read -r l; do
+              grep -nE "error:|fatal error|undefined symbol|undefined reference|duplicate symbol|>>>|defined in|No rule to make target|Error [0-9]" /tmp/compile.log | head -60 | while IFS= read -r l; do
                 printf '::error title=Compile error::%s\n' "$l"
               done
+              echo "::error title=WireGuard archive contents::$(find out -path '*wireguard*' -name 'built-in.a' -exec llvm-ar t {} \; 2>/dev/null | sort | uniq -c | sort -rn | head -8 | tr '\n' ' ')"
               tail -n 15 /tmp/compile.log | while IFS= read -r l; do
                 printf '::error title=Compile tail::%s\n' "$l"
               done
