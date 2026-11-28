@@ -8,6 +8,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Install Dependencies
         run: |
@@ -405,3 +407,29 @@ jobs:
             Earth-Lineage24-KSUNext.zip
             REVISIONS.txt
             build-config.txt
+
+      - name: Publish flashable ZIP to Releases (public download)
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="earth-stable-${{ github.run_number }}"
+          cat > /tmp/notes.md <<'NOTES'
+          Stable kernel for Redmi 12C / POCO C55 (earth), Linux 4.19.325, LineageOS 24.0.
+
+          * KernelSU-Next (legacy) with manual hooks. **SUSFS is not included in this build.**
+          * Tier A: DDR devfreq governors, thermal governors, CAKE/FQ_CODEL/PIE/CoDel,
+            extra TCP congestion controls, nftables + IPv6 NAT, extra filesystems, KERNEL_LZ4.
+          * Verified: ARM64 image, every requested CONFIG, required symbols in System.map.
+
+          Flash `Earth-Lineage24-KSUNext.zip` in TWRP/OrangeFox. Back up your boot partition first.
+          `REVISIONS.txt` and `build-config.txt` record the exact sources and configuration.
+
+          Compilation and symbol checks do not prove runtime behaviour. Flash at your own risk.
+          NOTES
+          gh release create "$TAG" \
+            --repo "${{ github.repository }}" \
+            --title "earth 4.19.325 stable - build ${{ github.run_number }}" \
+            --notes-file /tmp/notes.md \
+            Earth-Lineage24-KSUNext.zip REVISIONS.txt build-config.txt
+          echo "Release: https://github.com/${{ github.repository }}/releases/tag/$TAG"

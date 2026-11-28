@@ -6,6 +6,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout workflow repo
         uses: actions/checkout@v7
@@ -433,3 +435,28 @@ jobs:
             Earth-Lineage24-KSUNext-SUSFS-EXPERIMENTAL.zip
             REVISIONS.txt
             build-config.txt
+
+      - name: Publish flashable ZIP to Releases (public download)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="earth-susfs-${{ github.run_number }}"
+          cat > /tmp/notes.md <<'NOTES'
+          EXPERIMENTAL kernel (SUSFS) for Redmi 12C / POCO C55 (earth), Linux 4.19.325, LineageOS 24.0.
+
+          * KernelSU-Next (legacy) + **SUSFS ported and symbol-verified** (experimental).
+          * Tier A: DDR devfreq governors, thermal governors, CAKE/FQ_CODEL/PIE/CoDel,
+            extra TCP congestion controls, nftables + IPv6 NAT, extra filesystems, KERNEL_LZ4.
+          * Verified: ARM64 image, every requested CONFIG, required symbols in System.map.
+
+          Flash `Earth-Lineage24-KSUNext-SUSFS-EXPERIMENTAL.zip` in TWRP/OrangeFox. Back up your boot partition first.
+          `REVISIONS.txt` and `build-config.txt` record the exact sources and configuration.
+
+          Compilation and symbol checks do not prove runtime behaviour. Flash at your own risk.
+          NOTES
+          gh release create "$TAG" \
+            --repo "${{ github.repository }}" \
+            --title "earth 4.19.325 SUSFS experimental - build ${{ github.run_number }}" \
+            --notes-file /tmp/notes.md --prerelease \
+            Earth-Lineage24-KSUNext-SUSFS-EXPERIMENTAL.zip REVISIONS.txt build-config.txt
+          echo "Release: https://github.com/${{ github.repository }}/releases/tag/$TAG"
