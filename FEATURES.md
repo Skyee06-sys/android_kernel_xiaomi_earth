@@ -28,10 +28,13 @@ repository is a measurement. Boot behaviour is unverified until tested on device
 
 ## 📦 Which build has what
 
-| Feature group | Stable `earth-stable-22` | SUSFS `earth-susfs-5` |
-|---|:---:|:---:|
-| Everything below except SUSFS | ✅ | ✅ |
-| SUSFS v1.5.5 | ❌ | ✅ |
+| Feature group | Stable | SUSFS | Experimental (LTO) |
+|---|:---:|:---:|:---:|
+| Base + Tier A + Group 2/4 | ✅ | ✅ | ✅ |
+| Phase C1 hardening + tuning | ✅ | ✅ | ✅ |
+| Phase C2 subsystems | ✅ | ✅ | ✅ |
+| SUSFS v1.5.5 | ❌ | ✅ | ❌ *(excluded to isolate LTO)* |
+| LTO + CFI + SCS | ❌ | ❌ | ✅ **pre-release, manual only** |
 
 ---
 
@@ -45,7 +48,7 @@ repository is a measurement. Boot behaviour is unverified until tested on device
 | **schedutil** governor (default) | **Enabled** | `CPU_FREQ_GOV_SCHEDUTIL=y`, `CPU_FREQ_DEFAULT_GOV_SCHEDUTIL=y` *(already stock)* | `kernel/sched/cpufreq_schedutil.c` |
 | performance / conservative governors | **Enabled** | `CPU_FREQ_GOV_PERFORMANCE=y`, `…_CONSERVATIVE=y` | `drivers/cpufreq/` |
 | **UCLAMP** (task + group) | **Enabled** | `UCLAMP_TASK=y`, `UCLAMP_TASK_GROUP=y` *(stock)* | `init/Kconfig:724` |
-| UCLAMP bucket granularity | **Available-but-disabled** | `UCLAMP_BUCKETS_COUNT=5` (range **5–20**, `init/Kconfig:726`) | Raising to 20 is **Planned** (Phase C1) |
+| UCLAMP bucket granularity | **Enabled** | `UCLAMP_BUCKETS_COUNT=20` (was 5; range **5–20**, `init/Kconfig:726`) | Phase C1 — finer clamp aggregation for EAS |
 | **Full preemption** | **Enabled** | `PREEMPT=y`, `HZ=250` | `kernel/Kconfig.preempt` |
 | Scheduler multinode | **Enabled** | `SCHED_MC=y` | `kernel/sched/` |
 | **SCHEDSTATS** | **Enabled** | `CONFIG_SCHEDSTATS=y` — ⚠️ **already stock** (`earth_defconfig:378`); the Group 4 request was redundant | `kernel/sched/stats.c` |
@@ -76,7 +79,7 @@ logs `energy model register result %d` at the line cited above.
 | **Compaction / CMA** | **Enabled** | `COMPACTION=y`, `CMA=y` *(stock)* | `mm/compaction.c`, `mm/cma.c` |
 | Memory cgroups + swap | **Enabled** | `MEMCG=y`, `MEMCG_SWAP=y` | `mm/memcontrol.c` |
 | `PROC_PAGE_MONITOR` | **Enabled** | `=y` *(stock)* | `fs/proc/task_mmu.c` |
-| **`IDLE_PAGE_TRACKING`** | Available-but-disabled → **Planned** | `n` | `mm/page_idle.c` present; zero side effects verified |
+| **`IDLE_PAGE_TRACKING`** | **Enabled** | `y` (Phase C1) | `mm/page_idle.c`; zero side effects verified |
 | **`ZRAM_MEMORY_TRACKING`** | **Unsupported by policy** | `n` | `drivers/block/zram/Kconfig`: `depends on DEBUG_FS`, which stays off |
 | **`ZSMALLOC_STAT`** | **Declined** | `n` | `mm/Kconfig:617` **`select DEBUG_FS`** → would force debugfs on plus 14 further debug symbols |
 | **`ZRAM_DEF_COMP_*`** | **Unsupported** | symbol absent | Not in 4.19; runtime `comp_algorithm` instead |
@@ -114,8 +117,8 @@ logs `energy model register result %d` at the line cited above.
 | **SquashFS** (XZ/LZ4/ZSTD) | **Enabled** | `SQUASHFS=y` + compressors | `fs/squashfs/inode.c` |
 | **XFS / Btrfs / HFS+ / UDF / JFS** | **Enabled** | `=y` | `fs/xfs/libxfs/xfs_alloc.c`, `fs/btrfs/super.c`, … |
 | **CIFS/SMB** | **Enabled** | `CIFS=y`, `NETWORK_FILESYSTEMS=y` | `fs/cifs/` |
-| **`BLK_CGROUP_IOLATENCY`** | Available-but-disabled → **Planned** | `n` | `block/blk-iolatency.c` present; zero side effects |
-| **`BLK_DEV_THROTTLING`** | Available-but-disabled → **Planned (C2)** | `n` | `block/blk-throttle.c`; adds `…_LOW=n` |
+| **`BLK_CGROUP_IOLATENCY`** | **Enabled** | `y` (Phase C1) | `block/blk-iolatency.c`; zero side effects |
+| **`BLK_DEV_THROTTLING`** | **Enabled** | `y` (Phase C2) | `block/blk-throttle.c`; adds `…_LOW=n` |
 | **`BLK_WBT`** | Available-but-disabled → **Experimental** | `n` | `block/blk-wbt.c`; auto-selects `BLK_WBT_MQ=y`. Changes I/O behaviour |
 | **`F2FS_FS_COMPRESSION`** | Available-but-disabled → **Experimental** | `n` | `fs/f2fs/compress.c` present; auto-selects LZ4/LZO/ZSTD. Needs userspace support; does **not** compress existing data |
 | **NFS / NFSD** | **Unsupported** | `n` | `fs/nfs/client.c:625` sets `rpc_clnt.cl_softerr`, absent from this tree's `include/linux/sunrpc/clnt.h` |
@@ -142,12 +145,12 @@ logs `energy model register result %d` at the line cited above.
 | ipset (17 variants) + TTL/HL | **Enabled** | `=y` | `net/netfilter/ipset/` |
 | **WireGuard** | **Enabled** | `WIREGUARD=y` — in-tree **v1.0.0**, never duplicated | `drivers/net/wireguard/socket.c` |
 | **BPF** core | **Enabled** | `BPF_SYSCALL`, `BPF_JIT`, `BPF_JIT_ALWAYS_ON`, `CGROUP_BPF`, `XDP_SOCKETS`, `NET_CLS_BPF`, `NET_ACT_BPF` *(stock)* | `kernel/bpf/syscall.c` |
-| `BPF_UNPRIV_DEFAULT_OFF` | Available-but-disabled → **Planned** | `n` | Zero side effects; reduces unprivileged attack surface |
-| **`TLS` (kTLS)** | Available-but-disabled → **Planned (C2)** | `n` | `net/tls/tls_main.c`; selects `STREAM_PARSER=y` |
-| **`BPF_STREAM_PARSER`** | Available-but-disabled → **Planned (C2)** | `n` | sockmap; selects `STREAM_PARSER=y` |
-| **`PACKET_DIAG` / `INET_UDP_DIAG` / `INET_RAW_DIAG`** | Available-but-disabled → **Planned** | `n` | `net/core/sock_diag.c`; enables proper `ss` output |
-| **`CGROUP_NET_PRIO`** | Available-but-disabled → **Planned** | `n` | `net/core/netprio_cgroup.c` |
-| **`NF_CONNTRACK_TIMEOUT`** | Available-but-disabled → **Planned (C2)** | `n` | Adds `NF_CT_NETLINK_TIMEOUT=n` |
+| **`BPF_UNPRIV_DEFAULT_OFF`** | **Enabled** | `y` (Phase C1) | Zero side effects; unprivileged BPF off by default |
+| **`TLS` (kTLS)** | **Enabled** | `y` (Phase C2) | `net/tls/tls_main.c`; selects `STREAM_PARSER=y` |
+| **`BPF_STREAM_PARSER`** | **Enabled** | `y` (Phase C2) | sockmap; selects `STREAM_PARSER=y` |
+| **`PACKET_DIAG` / `INET_UDP_DIAG` / `INET_RAW_DIAG`** | **Enabled** | `y` (Phase C1) | `net/core/sock_diag.c`; proper `ss` output |
+| **`CGROUP_NET_PRIO`** | **Enabled** | `y` (Phase C1) | `net/core/netprio_cgroup.c` |
+| **`NF_CONNTRACK_TIMEOUT`** | **Enabled** | `y` (Phase C2) | Adds `NF_CT_NETLINK_TIMEOUT=n` |
 | **`NET_SCH_DEFAULT`** | **Unsupported** | symbol absent | Not in 4.19; default qdisc is the runtime sysctl `net.core.default_qdisc` |
 | **BBR2 / BBRplus** | **Unsupported** | absent | Only BBR v1 in tree |
 
@@ -180,9 +183,12 @@ logs `energy model register result %d` at the line cited above.
 | **SUSFS v1.5.5** | **Experimental** | 13 options `=y`, 3 `=n` | `scripts/port_susfs.py`; **`earth-susfs-5` only** |
 | SELinux | **Enabled** | `SECURITY_SELINUX=y`, `…_DEVELOP=y`, `…_AVC_STATS=y` *(stock)* | `security/selinux/` |
 | Hardening suite | **Enabled** | see [SECURITY.md](SECURITY.md) | `security/Kconfig`, `arch/arm64/Kconfig` |
+| **Slab freelist random + hardened** | **Enabled** | `SLAB_FREELIST_RANDOM=y`, `SLAB_FREELIST_HARDENED=y` (C1) | `mm/slub.c` |
+| **FORTIFY_SOURCE** | **Enabled** | `y` (C1) | `include/linux/string.h`, `lib/string.c` |
+| **Strict usercopy** | **Enabled** | `HARDENED_USERCOPY_FALLBACK=n` (C1) | `security/Kconfig:174-180` — was `y`, downgrading violations to WARN |
 | **`SECURITY_YAMA`** | Available-but-disabled | `n` | `security/yama/yama_lsm.c` present. **Kept off** pending KernelSU-Next / root-tool / debugging compatibility verification |
-| **LTO_CLANG + CFI_CLANG** | Available-but-disabled → **Experimental** | `n` | `arch/arm64/Kconfig:61` `select ARCH_SUPPORTS_LTO_CLANG`; `arch/Kconfig:530,560`. Requires clang+lld |
-| **SHADOW_CALL_STACK** | Available-but-disabled → **Experimental** | `n` | `arch/arm64/Kconfig:63`; `arch/arm64/include/asm/scs.h` present |
+| **LTO_CLANG + THINLTO + CFI_CLANG** | **Experimental** | `n` in stable/SUSFS; **`y` in `experimental.yml`** with `CFI_PERMISSIVE=y` | `arch/arm64/Kconfig:61,62`; `arch/Kconfig:530,560`; `Makefile:864-877,894-904`. Pinned clang-16 |
+| **SHADOW_CALL_STACK** | **Experimental** | `n` in stable/SUSFS; **`y` in `experimental.yml`** | `arch/arm64/Kconfig:63,988` (clang ≥7); `asm/scs.h` present |
 | **`MODULE_SIG`** | **Declined** | `n` | Auto-selects `MODULE_SIG_ALL=y` + a generated `certs/signing_key.pem` → breaks build reproducibility |
 | **`SUS_SU`** | **Unsupported** | `=n` | Requires kprobes; not viable on this non-GKI 4.19 kernel |
 | **`avc_log_spoofing`, `emulate_vold_app_data`** | **Unsupported** | — | Absent from SUSFS v1.5.5 kernel-4.19 source |

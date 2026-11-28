@@ -3,11 +3,28 @@ name: SUSFS experimental build (isolated, manual only)
 on:
   workflow_dispatch:
 
+# Phase B: superseded runs are cancelled instead of wasting runners.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    # Phase B: a hung job must not consume the 6-hour default.
+    timeout-minutes: 60
     permissions:
       contents: write
+    env:
+      # Phase B: pinned toolchain. ubuntu-24.04 runners ship clang 16/17/18.
+      # The exact version used is recorded in REVISIONS.txt; if the pinned
+      # binary is missing the build falls back to `clang` and says so loudly.
+      CLANG_VERSION: '18'
+      GCC64_SHA: '5e030eafe024784a73cdf47e6936ac0dbfc763dc'
+      GCC32_SHA: '111258a10e017f067b27e6cfcea7619d753f3309'
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 2G
+      CCACHE_COMPILERCHECK: content
     steps:
       - name: Checkout workflow repo
         uses: actions/checkout@v7
@@ -15,7 +32,9 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves zip python3 cpio wget git clang lld llvm
+          sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves zip python3 cpio wget git clang lld llvm ccache
+          echo "== available clang versions =="
+          ls -1 /usr/bin/clang-* 2>/dev/null | head -10 || true
 
       - name: Clone & Patch Kernel (KSU-Next + earth tweaks)
         run: |
@@ -360,6 +379,46 @@ jobs:
           # Validated with kconfiglib: DEFAULT_BBR=y, DEFAULT_CUBIC=n,
           # DEFAULT_TCP_CONG="bbr". The string below is kept for readability.
           CONFIG_DEFAULT_BBR=y
+          # ================= Phase C1: safe hardening + tuning =================
+          # Each validated individually with kconfiglib against the real tree;
+          # whole-config diff showed NO unrequested side effects unless noted.
+          # UCLAMP_BUCKETS_COUNT: 5 -> 20. Range is 5..20 (init/Kconfig:726), so
+          # this moves clamp granularity from 20% to 5% buckets. EAS is active on
+          # this device (MTK registers the EM at mtk_cpufreq_main.c:1302), so
+          # finer clamping affects real task placement. Expected, not measured.
+          CONFIG_UCLAMP_BUCKETS_COUNT=20
+          # Slab allocator hardening: randomise allocation order and validate
+          # freelist pointers. Makes heap grooming unreliable.
+          CONFIG_SLAB_FREELIST_RANDOM=y
+          CONFIG_SLAB_FREELIST_HARDENED=y
+          # Compile-time + runtime bounds checks on string/memory operations.
+          # Benign side effect: the PROFILE_ALL_BRANCHES choice entry disappears.
+          CONFIG_FORTIFY_SOURCE=y
+          # Unprivileged BPF off by default. Root/Android usage unaffected.
+          CONFIG_BPF_UNPRIV_DEFAULT_OFF=y
+          # HARDENED_USERCOPY is already on, but FALLBACK defaults to y
+          # (security/Kconfig:174-180) which downgrades violations to WARN().
+          # Setting n makes the existing hardening actually strict.
+          CONFIG_HARDENED_USERCOPY_FALLBACK=n
+          # Idle page tracking for memory analysis (mm/page_idle.c).
+          CONFIG_IDLE_PAGE_TRACKING=y
+          # Per-cgroup I/O latency targets (block/blk-iolatency.c).
+          CONFIG_BLK_CGROUP_IOLATENCY=y
+          # Socket introspection so `ss` reports properly (net/core/sock_diag.c).
+          CONFIG_PACKET_DIAG=y
+          CONFIG_INET_UDP_DIAG=y
+          CONFIG_INET_RAW_DIAG=y
+          # Per-cgroup network priority (net/core/netprio_cgroup.c).
+          CONFIG_CGROUP_NET_PRIO=y
+          # ================= Phase C2: additional subsystems ===================
+          # kTLS: TLS record handling in-kernel. Selects STREAM_PARSER=y.
+          CONFIG_TLS=y
+          # sockmap / stream parser for BPF-based proxy redirection.
+          CONFIG_BPF_STREAM_PARSER=y
+          # Per-cgroup I/O bandwidth caps. Adds BLK_DEV_THROTTLING_LOW=n.
+          CONFIG_BLK_DEV_THROTTLING=y
+          # Custom conntrack timeouts. Adds NF_CT_NETLINK_TIMEOUT=n.
+          CONFIG_NF_CONNTRACK_TIMEOUT=y
           EOF
           # Record exactly what we request so verification checks our options,
           # not unrelated stock defconfig entries that Kconfig may drop.
@@ -367,28 +426,73 @@ jobs:
 
       - name: Setup GCC Binutils
         run: |
-          git clone --depth=1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 -b master toolchain/gcc64
-          git clone --depth=1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 -b master toolchain/gcc32
+          # Phase B: pinned to fixed commits on GitHub mirrors instead of a
+          # moving `-b master` on android.googlesource.com. Reproducible, and
+          # removes a dependency on a host outside the project's allowlist.
+          set -e
+          git clone --depth=1 -b lineage-19.1 \
+            https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9.git toolchain/gcc64
+          git -C toolchain/gcc64 fetch --depth=1 origin "$GCC64_SHA"
+          git -C toolchain/gcc64 checkout --detach "$GCC64_SHA"
+          git clone --depth=1 -b lineage-19.1 \
+            https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9.git toolchain/gcc32
+          git -C toolchain/gcc32 fetch --depth=1 origin "$GCC32_SHA"
+          git -C toolchain/gcc32 checkout --detach "$GCC32_SHA"
+          echo "gcc64 pinned: $(git -C toolchain/gcc64 rev-parse HEAD)"
+          echo "gcc32 pinned: $(git -C toolchain/gcc32 rev-parse HEAD)"
+          test -x toolchain/gcc64/bin/aarch64-linux-android-ld || { echo "::error title=Toolchain::aarch64 binutils missing"; exit 1; }
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-${{ github.workflow }}-${{ env.CLANG_VERSION }}-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ github.workflow }}-${{ env.CLANG_VERSION }}-
+            ccache-${{ github.workflow }}-
 
       - name: Compile Kernel
         run: |
           export PATH="$PWD/toolchain/gcc64/bin:$PWD/toolchain/gcc32/bin:$PATH"
+          # Phase B: select the pinned clang, fall back loudly if absent.
+          if command -v "clang-$CLANG_VERSION" >/dev/null 2>&1; then
+            KCC="clang-$CLANG_VERSION"; KLD="ld.lld-$CLANG_VERSION"
+            KAR="llvm-ar-$CLANG_VERSION"; KNM="llvm-nm-$CLANG_VERSION"
+            KOC="llvm-objcopy-$CLANG_VERSION"; KOD="llvm-objdump-$CLANG_VERSION"; KST="llvm-strip-$CLANG_VERSION"
+          else
+            echo "::warning title=Toolchain::clang-$CLANG_VERSION not found; falling back to unpinned clang"
+            KCC=clang; KLD=ld.lld; KAR=llvm-ar; KNM=llvm-nm
+            KOC=llvm-objcopy; KOD=llvm-objdump; KST=llvm-strip
+          fi
+          command -v "$KLD" >/dev/null 2>&1 || KLD=ld.lld
+          command -v "$KAR" >/dev/null 2>&1 || KAR=llvm-ar
+          command -v "$KNM" >/dev/null 2>&1 || KNM=llvm-nm
+          command -v "$KOC" >/dev/null 2>&1 || KOC=llvm-objcopy
+          command -v "$KOD" >/dev/null 2>&1 || KOD=llvm-objdump
+          command -v "$KST" >/dev/null 2>&1 || KST=llvm-strip
+          echo "compiler: $($KCC --version | head -1)"
+          echo "linker:   $($KLD --version | head -1)"
+          echo "$($KCC --version | head -1)" > /tmp/clang_version.txt
+          ccache --zero-stats >/dev/null 2>&1 || true
+          ccache --max-size="$CCACHE_MAXSIZE" >/dev/null 2>&1 || true
+          BUILD_START=$(date +%s)
+          echo "$BUILD_START" > /tmp/build_start.txt
           cd kernel
           make O=out ARCH=arm64 earth_defconfig
           set -o pipefail
           make -j$(nproc --all) O=out \
             ARCH=arm64 \
             SUBARCH=arm64 \
-            CC=clang \
+            CC="ccache $KCC" \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-android- \
             CROSS_COMPILE_ARM32=arm-linux-androideabi- \
-            LD=ld.lld \
-            AR=llvm-ar \
-            NM=llvm-nm \
-            OBJCOPY=llvm-objcopy \
-            OBJDUMP=llvm-objdump \
-            STRIP=llvm-strip \
+            LD="$KLD" \
+            AR="$KAR" \
+            NM="$KNM" \
+            OBJCOPY="$KOC" \
+            OBJDUMP="$KOD" \
+            STRIP="$KST" \
             KCFLAGS="-Wno-error" \
             Image.gz-dtb 2>&1 | tee /tmp/compile.log || {
               echo "::error title=Kernel compile failed::error lines extracted below"
@@ -401,6 +505,35 @@ jobs:
               done
               exit 1
             }
+
+          # ---- Phase B: build metrics, warning accounting, ccache stats ----
+          BUILD_END=$(date +%s); BUILD_START=$(cat /tmp/build_start.txt 2>/dev/null || echo "$BUILD_END")
+          DURATION=$((BUILD_END - BUILD_START))
+          WARN_COUNT=$(grep -c 'warning:' /tmp/compile.log 2>/dev/null || echo 0)
+          ERR_COUNT=$(grep -c 'error:' /tmp/compile.log 2>/dev/null || echo 0)
+          echo "$DURATION" > /tmp/build_duration.txt
+          echo "$WARN_COUNT" > /tmp/warn_count.txt
+          echo "== build duration: ${DURATION}s =="
+          echo "== compiler warnings: $WARN_COUNT (errors: $ERR_COUNT) =="
+          # -Wno-error is required by this vendor tree, so warnings never fail the
+          # build. They must still be visible: surface the most frequent kinds.
+          if [ "$WARN_COUNT" -gt 0 ]; then
+            echo "== top warning categories =="
+            grep -o '\[-W[a-z0-9-]*\]' /tmp/compile.log 2>/dev/null | sort | uniq -c | sort -rn | head -12 || true
+          fi
+          echo "== ccache statistics =="
+          ccache --show-stats 2>/dev/null | head -14 || true
+          {
+            echo "### Kernel build metrics"
+            echo ""
+            echo "| Metric | Value |"
+            echo "|---|---|"
+            echo "| Compiler | $(cat /tmp/clang_version.txt 2>/dev/null || echo unknown) |"
+            echo "| Duration | ${DURATION}s |"
+            echo "| Warnings | ${WARN_COUNT} |"
+            echo "| Errors | ${ERR_COUNT} |"
+            echo "| Image bytes | $(stat -c%s out/arch/arm64/boot/Image.gz-dtb 2>/dev/null || echo n/a) |"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Verify kernel, configuration and symbols
         run: |
@@ -418,6 +551,7 @@ jobs:
           import re, sys
           want = []
           want_str = {}
+          want_off = []
           src = open('/tmp/requested-config.txt').read()
           for line in src.splitlines():
               line = line.strip()
@@ -432,6 +566,13 @@ jobs:
               ms = re.match(r'^CONFIG_([A-Z0-9_]+)=(".*"|[0-9]+|0x[0-9a-fA-F]+)$', line)
               if ms:
                   want_str[ms.group(1)] = ms.group(2)
+                  continue
+              # Explicitly-disabled options must be asserted too. Kconfig can
+              # re-enable a symbol via 'default y' or a 'select', so requesting
+              # =n is only meaningful if it is verified in the final .config.
+              mn = re.match(r'^CONFIG_([A-Z0-9_]+)=n$', line)
+              if mn:
+                  want_off.append(mn.group(1))
           have = dict(re.findall(r'^CONFIG_([A-Z0-9_]+)=(.*)$', open('out/.config').read(), re.M))
           # In this experimental build SUSFS is ported, so enforce it too.
           inactive = []
@@ -444,6 +585,13 @@ jobs:
           if missing:
               for s in missing:
                   print(f"::error title=Config not applied::CONFIG_{s} (got {have.get(s,'absent')})")
+              sys.exit(1)
+          bad_off = [s for s in want_off if have.get(s, 'n') not in ('n', 'absent')]
+          if want_off:
+              print(f"checked {len(want_off)} explicitly-disabled options")
+          if bad_off:
+              for s in bad_off:
+                  print(f"::error title=Option should be disabled::CONFIG_{s} wanted n got {have.get(s)}")
               sys.exit(1)
           bad_str = {s: (v, have.get(s, 'absent')) for s, v in want_str.items() if have.get(s) != v}
           if want_str:
@@ -471,6 +619,12 @@ jobs:
           echo "== source revisions (reproducibility) =="
           {
             echo "build_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "compiler=$(cat /tmp/clang_version.txt 2>/dev/null || echo unknown)"
+            echo "clang_pin_requested=$CLANG_VERSION"
+            echo "gcc64_sha=$GCC64_SHA"
+            echo "gcc32_sha=$GCC32_SHA"
+            echo "build_seconds=$(cat /tmp/build_duration.txt 2>/dev/null || echo unknown)"
+            echo "compiler_warnings=$(cat /tmp/warn_count.txt 2>/dev/null || echo unknown)"
             echo "kernel_repo=LineageOS/android_kernel_xiaomi_earth branch=lineage-24.0"
             echo "kernel_sha=$(git rev-parse HEAD)"
             echo "kernel_version=$(make -s kernelversion 2>/dev/null)"
@@ -501,6 +655,35 @@ jobs:
           unzip -l Earth-Lineage24-KSUNext-SUSFS-EXPERIMENTAL.zip | grep -q "Image.gz-dtb" || { echo "::error title=Package::kernel image missing from zip"; exit 1; }
           unzip -p Earth-Lineage24-KSUNext-SUSFS-EXPERIMENTAL.zip anykernel.sh | grep -E "^device.name1=|^block=|^is_slot_device=" || true
 
+      - name: Validate artifacts and compute checksums
+        run: |
+          set -e
+          ZIP="Earth-Lineage24-KSUNext-SUSFS-EXPERIMENTAL.zip"
+          test -s "$ZIP" || { echo "::error title=Artifact::ZIP missing or empty"; exit 1; }
+          # Integrity: a truncated/corrupt zip must never be published.
+          unzip -t "$ZIP" >/dev/null || { echo "::error title=Artifact::ZIP failed integrity test"; exit 1; }
+          unzip -l "$ZIP" | grep -q "Image.gz-dtb" || { echo "::error title=Artifact::kernel image absent from ZIP"; exit 1; }
+          unzip -p "$ZIP" anykernel.sh | grep -qE "^device.name1=earth" || { echo "::error title=Artifact::device lock missing"; exit 1; }
+          test -s REVISIONS.txt || { echo "::error title=Artifact::REVISIONS.txt missing"; exit 1; }
+          test -s build-config.txt || { echo "::error title=Artifact::build-config.txt missing"; exit 1; }
+          sha256sum "$ZIP" REVISIONS.txt build-config.txt > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          {
+            echo ""
+            echo "### Artifact validation"
+            echo ""
+            echo "| Check | Result |"
+            echo "|---|---|"
+            echo "| ZIP integrity (unzip -t) | pass |"
+            echo "| Image present in ZIP | pass |"
+            echo "| Device lock earth | pass |"
+            echo "| ZIP bytes | $(stat -c%s "$ZIP") |"
+            echo ""
+            echo '```'
+            cat SHA256SUMS.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Upload Artifact
         uses: actions/upload-artifact@v7
         with:
@@ -509,6 +692,7 @@ jobs:
             Earth-Lineage24-KSUNext-SUSFS-EXPERIMENTAL.zip
             REVISIONS.txt
             build-config.txt
+            SHA256SUMS.txt
 
       - name: Publish flashable ZIP to Releases (public download)
         env:
@@ -532,5 +716,5 @@ jobs:
             --repo "${{ github.repository }}" \
             --title "earth 4.19.325 SUSFS experimental - build ${{ github.run_number }}" \
             --notes-file /tmp/notes.md --prerelease \
-            Earth-Lineage24-KSUNext-SUSFS-EXPERIMENTAL.zip REVISIONS.txt build-config.txt
+            Earth-Lineage24-KSUNext-SUSFS-EXPERIMENTAL.zip REVISIONS.txt build-config.txt SHA256SUMS.txt
           echo "Release: https://github.com/${{ github.repository }}/releases/tag/$TAG"

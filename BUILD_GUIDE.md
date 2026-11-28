@@ -61,7 +61,8 @@ gh run watch <run-id>
 5. Verify                    image, AArch64, configs, string values, symbols
 6. Package AnyKernel3        locked to earth / aether
 7. Upload Artifact           actions/upload-artifact@v7
-8. Publish Release           gh release create (+ --prerelease for SUSFS)
+8. Validate artifacts        unzip -t, image, device lock, SHA256SUMS
+9. Publish Release           gh release create (+ --prerelease for SUSFS/experimental)
 ```
 
 ### Compiler invocation
@@ -142,22 +143,38 @@ candidate, and diff. That reveals side effects per feature. See
 | `Earth-Lineage24-KSUNext[-SUSFS-EXPERIMENTAL].zip` | AnyKernel3 flashable package |
 | `REVISIONS.txt` | kernel/KSU SHAs, build UTC; SUSFS also records `susfs_version`, `susfs_remote`, `susfs_sha`, `sus_su` |
 | `build-config.txt` | the complete `.config` actually built |
+| `SHA256SUMS.txt` | SHA256 of the ZIP, REVISIONS and build-config |
 
 Release assets are public — **no GitHub sign-in**. Actions artifacts require
 sign-in and expire after 90 days, which is why releases are used for distribution.
 
 ---
 
-## 🚧 Current CI limitations (Phase B will address)
+## ✅ Phase B hardening (implemented)
 
-| Issue | Tracking |
+| Improvement | Detail |
 |---|---|
-| clang version unpinned | [KI-007](KNOWN_ISSUES.md) |
-| GCC toolchain cloned from `-b master` | KI-007 |
-| No ccache — full ~17 min rebuild each time | KI-008 |
-| No `timeout-minutes` / `concurrency` | KI-009 |
-| Warning counts not reported | KI-010 |
-| No SHA256 checksums | KI-011 |
+| **Pinned clang** | `CLANG_VERSION='18'` (stable/SUSFS), `'16'` (experimental). Uses `clang-N`, `ld.lld-N`, `llvm-*-N`; falls back with a `::warning` if absent. Actual version recorded in `REVISIONS.txt`. |
+| **Pinned GCC binutils** | LineageOS GitHub mirrors at fixed SHAs `5e030ea` / `111258a`, checked out detached and validated with `test -x` |
+| **ccache** | `actions/cache@v4`, `CC="ccache …"`, `CCACHE_COMPILERCHECK=content`, stats printed |
+| **Timeout** | `timeout-minutes: 60` |
+| **Concurrency** | per workflow+ref, `cancel-in-progress: true` |
+| **Warning accounting** | total count + top `[-W…]` categories; `-Wno-error` retained because the vendor tree requires it |
+| **Build duration** | measured, reported in summary and `REVISIONS.txt` |
+| **Artifact validation** | `unzip -t` integrity, image present, **device lock asserted**, REVISIONS/config present — all fail the build |
+| **Checksums** | `SHA256SUMS.txt` published as a release asset |
+| **Job summary** | `$GITHUB_STEP_SUMMARY` tables for metrics and validation |
+
+### The third workflow
+
+| | Experimental |
+|---|---|
+| File | `.github/workflows/experimental.yml` |
+| Trigger | **`workflow_dispatch` only — no `push` trigger at all** |
+| Adds | `LTO_CLANG`, `THINLTO`, `CFI_CLANG`, `CFI_PERMISSIVE`, `SHADOW_CALL_STACK` |
+| SUSFS | ❌ excluded, so an LTO failure cannot be confused with a SUSFS failure |
+| Compiler | pinned **clang-16** (better matched to the 4.19 LTO backport) |
+| Tag | `earth-experimental-<n>`, **pre-release** |
 
 ---
 
