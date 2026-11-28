@@ -67,14 +67,18 @@ The module exposes these toggles regardless of kernel support. **Leave them off.
 
 ## 🟢 Addressed in Phase B — build/tooling
 
-> These are implemented in the workflows; confirm in the next build's job summary
-> and `REVISIONS.txt` before treating them as closed.
+> These are implemented in the workflows, but **none is confirmed yet**. The
+> first attempt (stable #23, SUSFS #6, experimental #1) failed at `Restore ccache`
+> — a comma in the cache key — **before the compiler ran**. That key is now fixed.
+> Each item below stays open until a build actually reaches the compile step and
+> its job summary / `REVISIONS.txt` shows the expected evidence. Code written is
+> not the same as behaviour observed.
 
 ### KI-007 · Toolchain versions are not pinned
 
 | | |
 |---|---|
-| **Status** | **Addressed in Phase B** — verify in build output |
+| **Status** | 🟡 Pinned clang + fixed GCC mirror SHAs are in the workflow; **unconfirmed** — no build has reached the compile step yet. |
 | **Evidence** | `apt-get install clang` (unversioned); GCC binutils cloned with `-b master` from `android.googlesource.com` |
 | **Impact** | Builds are not reproducible over time; an upstream clang bump can break the build without any repo change |
 | **Plan** | Pin clang and the toolchain commit in Phase B |
@@ -83,7 +87,7 @@ The module exposes these toggles regardless of kernel support. **Leave them off.
 
 | | |
 |---|---|
-| **Status** | **Addressed in Phase B** — ccache + actions/cache |
+| **Status** | 🟡 ccache + `actions/cache@v5` with a comma-free key; **unconfirmed** — the first attempt failed in this very step. |
 | **Impact** | Every build is a full ~17-minute compile |
 | **Plan** | ccache + `actions/cache` |
 
@@ -91,7 +95,7 @@ The module exposes these toggles regardless of kernel support. **Leave them off.
 
 | | |
 |---|---|
-| **Status** | **Addressed in Phase B** — timeout 60 min + concurrency |
+| **Status** | 🟡 `timeout-minutes: 60` + concurrency are in the workflow; **unconfirmed** in a completed run. |
 | **Impact** | A hung job can consume the 6-hour default; superseded pushes waste runners |
 | **Plan** | `timeout-minutes` + `concurrency` with cancel-in-progress |
 
@@ -99,7 +103,7 @@ The module exposes these toggles regardless of kernel support. **Leave them off.
 
 | | |
 |---|---|
-| **Status** | **Addressed in Phase B** — warnings counted and reported |
+| **Status** | 🟡 Counting/reporting is implemented (and a `0\n0` counter bug was fixed); **unconfirmed** — no compile log produced yet. |
 | **Evidence** | `KCFLAGS="-Wno-error"` |
 | **Why it exists** | The MTK vendor tree emits many warnings; `-Werror` would make the build impossible |
 | **Problem** | Warning counts are never reported, so a genuine new warning is invisible |
@@ -109,7 +113,7 @@ The module exposes these toggles regardless of kernel support. **Leave them off.
 
 | | |
 |---|---|
-| **Status** | **Addressed in Phase B** — SHA256SUMS.txt published |
+| **Status** | 🟡 `SHA256SUMS.txt` generation is implemented; **unconfirmed** — no artifact has been validated yet. |
 | **Impact** | Download integrity cannot be verified |
 | **Plan** | Publish SHA256 alongside each release asset |
 

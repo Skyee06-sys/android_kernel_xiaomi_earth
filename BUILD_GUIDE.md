@@ -150,13 +150,20 @@ sign-in and expire after 90 days, which is why releases are used for distributio
 
 ---
 
-## ✅ Phase B hardening (implemented)
+## 🔧 Phase B hardening (implemented, awaiting first green run)
+
+> **Status:** written and statically validated, **not yet confirmed by a
+> successful build**. The first attempt (stable #23 / SUSFS #6 / experimental #1)
+> failed at `Restore ccache` because the cache key was built from
+> `github.workflow` — the display *name*, which contains commas — and
+> `actions/cache` rejects commas. Now keyed by a fixed `CACHE_SLUG`.
+> See [post-mortem 7](changelog/BUILD-LEDGER.md).
 
 | Improvement | Detail |
 |---|---|
 | **Pinned clang** | `CLANG_VERSION='18'` (stable/SUSFS), `'16'` (experimental). Uses `clang-N`, `ld.lld-N`, `llvm-*-N`; falls back with a `::warning` if absent. Actual version recorded in `REVISIONS.txt`. |
 | **Pinned GCC binutils** | LineageOS GitHub mirrors at fixed SHAs `5e030ea` / `111258a`, checked out detached and validated with `test -x` |
-| **ccache** | `actions/cache@v4`, `CC="ccache …"`, `CCACHE_COMPILERCHECK=content`, stats printed |
+| **ccache** | `actions/cache@v5` (Node 24), keyed `ccache-<CACHE_SLUG>-clang<N>-<sha>` with prefix restore-keys. `CC="ccache …"`, `CCACHE_COMPILERCHECK=content`, `CCACHE_MAXSIZE=2G`, stats printed. **Keys must be comma-free** — hence the slug, not the workflow title. |
 | **Timeout** | `timeout-minutes: 60` |
 | **Concurrency** | per workflow+ref, `cancel-in-progress: true` |
 | **Warning accounting** | total count + top `[-W…]` categories; `-Wno-error` retained because the vendor tree requires it |
@@ -175,6 +182,34 @@ sign-in and expire after 90 days, which is why releases are used for distributio
 | SUSFS | ❌ excluded, so an LTO failure cannot be confused with a SUSFS failure |
 | Compiler | pinned **clang-16** (better matched to the 4.19 LTO backport) |
 | Tag | `earth-experimental-<n>`, **pre-release** |
+
+---
+
+### Static checks to run before dispatching a workflow change
+
+A CI edit deserves the same review as a kernel edit. These are free; a failed
+17-minute runner is not.
+
+```bash
+# YAML parses, and the triggers are what you expect
+python3 -c "import yaml; d=yaml.safe_load(open('.github/workflows/blank.yml')); print(d[True])"
+
+# every run: block is valid bash, every embedded verifier is valid python
+python3 - <<'EOF'
+import yaml, re, subprocess, textwrap
+d = yaml.safe_load(open('.github/workflows/blank.yml'))
+for st in d['jobs']['build']['steps']:
+    if 'run' not in st: continue
+    s = re.sub(r'\$\{\{[^}]*\}\}', 'GHEXPR', st['run'])
+    subprocess.run(['bash','-n'], input=s, text=True, check=True)
+    for m in re.finditer(r"<< 'PYEOF'\n(.*?)\n\s*PYEOF", s, re.S):
+        compile(textwrap.dedent(m.group(1)), '<verifier>', 'exec')
+print('OK')
+EOF
+```
+
+Also remember: **cache keys may not contain commas**, and `github.workflow` is
+the workflow's title, not its filename.
 
 ---
 

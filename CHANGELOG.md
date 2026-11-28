@@ -49,6 +49,39 @@ was made and **what it should improve**. Newest first.
 
 ---
 
+## [CI fix] — 2026-11-27 · cache key, action runtime, warning counter
+
+🐛 **All three Phase B/C workflows failed at `Restore ccache` before compiling.**
+Stable [#23](https://github.com/Skyee06-sys/android_kernel_xiaomi_earth/actions/runs/46176374866),
+SUSFS [#6](https://github.com/Skyee06-sys/android_kernel_xiaomi_earth/actions/runs/46176386174),
+experimental [#1](https://github.com/Skyee06-sys/android_kernel_xiaomi_earth/actions/runs/46176388608).
+
+| | Before | After |
+|---|---|---|
+| Cache key | `ccache-${{ github.workflow }}-…` — the **display name**, which contains commas | `ccache-${{ env.CACHE_SLUG }}-clang…` — fixed slug `stable` / `susfs` / `experimental` |
+| Cache action | `actions/cache@v4` (Node 20, deprecated, force-run on Node 24) | `actions/cache@v5` (native Node 24) |
+| Warning counter | `$(grep -c … \|\| echo 0)` → `0\n0` on a clean build | `\|\| true` + `${VAR:-0}` |
+| Symbol probe | probed `nfs_init_sbi` although NFS is disabled (KI-002) | probes source-verified C1/C2 symbols instead |
+| Release notes | omitted the new C1/C2 features | accurate manifest, explicit exclusions, checksum pointer |
+
+**Root cause:** `actions/cache` rejects commas in keys —
+`Key Validation Error: … cannot contain commas`. `github.workflow` is the human
+title, not the filename, and every title here has a comma in it.
+
+📊 **Verified before re-dispatch:** all 24 `run:` blocks across the three
+workflows pass `bash -n`; every embedded Python verifier passes `compile()`;
+all three YAML files parse. **No kernel config was touched by this fix**, so the
+C1/C2 validation (16/16, zero regressions) still holds unchanged.
+
+⚠️ Experimental run #1 **did not test LTO** — it died in the cache step. Whether
+LTO/CFI/SCS build on this 4.19 MediaTek tree is still an open question.
+
+📚 Docs updated in the same commit: `changelog/BUILD-LEDGER.md` (three failed runs
++ post-mortem 7), `KNOWN_ISSUES.md` (KI-007…011 remain open until a build reaches
+the compile step), `BUILD_GUIDE.md`.
+
+---
+
 ## [Phases B + C1 + C2 + C3] — 2026-11-28
 
 **Kernel + CI change.** Stable and SUSFS gain C1/C2; C3 is isolated in a new

@@ -25,7 +25,8 @@ Runs GitHub still retains:
 
 | Run | ID | Result | Source | What it was |
 |:---:|---|:---:|---|---|
-| **#22** | 46137709296 | ✅ | `2fc7655` | Traffic control + proxy/firewall + monitoring; **BBR default fixed** |
+| **#23** | 46176374866 | ❌ | `6e5501a` | Phase B/C1/C2 — **failed at `Restore ccache`**: cache key contained commas. Never reached the compiler. |
+| #22 | 46137709296 | ✅ | `2fc7655` | Traffic control + proxy/firewall + monitoring; **BBR default fixed** |
 | #20 | 46128068561 | ✅ | `4d6c7ee` | Post-cleanup rebuild; `tools/` added, doc/tool trigger filter |
 | #19 | 46126184460 | ✅ | `db5b925` | SUSFS usage guide + version recording |
 | #18 | 46122056735 | ✅ | `a854381` | First build publishing to **Releases** |
@@ -57,11 +58,28 @@ Manual-only. Never runs on push.
 
 | Run | ID | Result | Source | What it was |
 |:---:|---|:---:|---|---|
-| **#5** | 46137717612 | ✅ | `2fc7655` | Same features as stable-22 + SUSFS v1.5.5 |
+| **#6** | 46176386174 | ❌ | `6e5501a` | Phase B/C1/C2 — same comma-in-cache-key failure at `Restore ccache`. |
+| #5 | 46137717612 | ✅ | `2fc7655` | Same features as stable-22 + SUSFS v1.5.5 |
 | #4 | 46123981627 | ✅ | `050caac` | `REVISIONS.txt` now records `susfs_version` |
 | #3 | 46122026185 | ✅ | `f4a33c3` | First SUSFS build published to Releases |
 | #2 | 46120198847 | ✅ | `540356a` | **First working SUSFS build** — 16m35s, 0 annotations |
 | #1 | 46118020502 | ❌ | `f2b6c46` | Link failure: undefined `susfs_try_umount_all` |
+
+---
+
+## 🧬 Experimental workflow (`experimental.yml`) — LTO + CFI + SCS
+
+Manual-only, pre-release. **SUSFS deliberately excluded.** Isolated so an LTO
+failure can never be mistaken for a SUSFS failure, and so experimental options
+can never reach a stable release by accident.
+
+| Run | ID | Result | Source | What it was |
+|:---:|---|:---:|---|---|
+| **#1** | 46176388608 | ❌ | `6e5501a` | First dispatch — failed at `Restore ccache` (comma in key), **before** any LTO code was compiled. LTO itself is still untested. |
+
+> ⚠️ Run #1 says nothing about whether LTO works on this tree. The job died in
+> the cache step. The LTO question remains open until a run actually reaches
+> the compile step.
 
 ---
 
@@ -123,6 +141,48 @@ Manual-only. Never runs on push.
 | **Fix** | Select `CONFIG_DEFAULT_BBR=y` |
 | **Prevention** | Verifier now checks string/numeric options; negative-tested to fail on `"cubic"` |
 | **Lesson** | A green build is not proof a setting took effect. Verify **values**, not just presence. |
+
+---
+
+### 7. Commas in a cache key — all three workflows died before compiling
+
+**Symptom.** Stable #23, SUSFS #6 and experimental #1 all failed within seconds,
+at the same step: `Restore ccache`. No compiler output at all.
+
+**Real root cause.** The Phase B cache key was built from `github.workflow`,
+which is the workflow's **display name**, not its filename. All three display
+names contain commas:
+
+```
+Build earth Kernel (LineageOS 24.0 + KernelSU-Next, stable)
+SUSFS experimental build (isolated, manual only)
+EXPERIMENTAL earth Kernel (LTO + CFI + SCS, isolated, manual only)
+```
+
+`actions/cache` rejects commas outright:
+
+```
+Key Validation Error: ccache-Build earth Kernel (LineageOS 24.0 + KernelSU-Next,
+stable)-18-6e5501a... cannot contain commas.
+```
+
+**Fix.** A fixed, comma-free `CACHE_SLUG` env var per workflow (`stable`,
+`susfs`, `experimental`) now keys the cache. This is also *better* than the
+display name: renaming a workflow no longer invalidates its cache.
+
+**Caught in the same pass, before rebuilding:**
+
+| Issue | Why it mattered | Fix |
+|---|---|---|
+| `actions/cache@v4` targets Node 20 | Runner emitted a deprecation warning and force-ran it on Node 24 | Bumped to `@v5` (native `node24`) |
+| `WARN_COUNT=$(grep -c … \|\| echo 0)` | `grep -c` prints `0` **and** exits 1, so the fallback appended a second `0`, producing `0\n0` and an "integer expression expected" error on a warning-free build | `\|\| true` plus a `${VAR:-0}` default |
+| Symbol probe still listed `nfs_init_sbi` | NFS is deliberately disabled (KI-002), so the probe printed a misleading note | Replaced with source-verified C1/C2 symbols: `fortify_panic`, `sk_psock_init`, `blk_throtl_init`, `blk_iolatency_init`, `nf_conntrack_timeout_init` |
+| Release notes omitted the new features | A release must carry an accurate feature manifest | Notes now list C1/C2, state what is **excluded**, and point at `SHA256SUMS.txt` |
+
+**Lesson.** A CI change needs the same review as a kernel change. Before
+re-dispatching, every `run:` block in all three workflows was checked with
+`bash -n` and every embedded Python verifier with `compile()` — 24 shell blocks,
+0 failures. Static checks are free; a failed 17-minute runner is not.
 
 ---
 
