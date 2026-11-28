@@ -12,15 +12,24 @@
 |---|---|---|
 | Workflow | `blank.yml` (auto on push to main + manual) | `susfs.yml` (**manual dispatch only**) |
 | Artifact | `Earth-Lineage24-KSUNext` | `Earth-Lineage24-KSUNext-SUSFS-EXPERIMENTAL` |
-| Verified run | **#16** on `main` — success | **#2** (`46120198847`) — success, 16m35s |
-| Size | 17,305,184 B | 17,314,892 B |
+| Verified run | **#19** on `main` — success | **#4** (`46123981627`) — success |
+| ZIP size | 17,271,557 B | 17,281,274 B |
 | SUSFS | not included, not claimed | ported, compiled, symbol-verified |
 | Annotations | **zero** | **zero** |
 
 Both contain the same Tier A improvements. The only difference is SUSFS.
 **Start with STABLE.** Move to EXPERIMENTAL only after the stable one boots and behaves.
 
-Download: repo → **Actions** → pick the run → **Artifacts** (GitHub sign-in required).
+**Direct downloads (public, no sign-in):**
+- STABLE: <https://github.com/Skyee06-sys/android_kernel_xiaomi_earth/releases/download/earth-stable-19/Earth-Lineage24-KSUNext.zip>
+- SUSFS EXPERIMENTAL: <https://github.com/Skyee06-sys/android_kernel_xiaomi_earth/releases/download/earth-susfs-4/Earth-Lineage24-KSUNext-SUSFS-EXPERIMENTAL.zip>
+
+Release pages: [earth-stable-19](https://github.com/Skyee06-sys/android_kernel_xiaomi_earth/releases/tag/earth-stable-19) ·
+[earth-susfs-4](https://github.com/Skyee06-sys/android_kernel_xiaomi_earth/releases/tag/earth-susfs-4)
+
+Each release also carries `REVISIONS.txt` (exact source SHAs, and for SUSFS the
+`susfs_version`) and `build-config.txt` (the full `.config` actually built).
+Superseded releases were removed; the tags remain for provenance.
 
 ---
 
@@ -177,7 +186,7 @@ The verification step asserts, and fails the job if any check fails:
 4. **Required symbols present in `System.map`:** `path_umount`, `ksu_handle_execveat`, `ksu_handle_faccessat`, `ksu_handle_vfs_read`, `ksu_handle_sys_reboot`, `wg_socket_init` — plus, for SUSFS: `susfs_init`, `susfs_is_current_ksu_domain`, `susfs_is_current_zygote_domain`, `ksu_try_umount`, `susfs_try_umount`.
 5. Package contents checked: the zip must contain `Image.gz-dtb`; device names printed.
 
-**Results:** stable **#15** and **#16** success, zero annotations. SUSFS **#2** success, zero annotations.
+**Results:** stable **#15**, **#16**, **#18**, **#19** all success with zero annotations. SUSFS **#2** and **#4** success with zero annotations.
 
 > **A successful compilation does not prove the kernel boots.** No runtime claim is made for either build. Nothing was flashed, and nothing will be flashed without your approval.
 
@@ -230,8 +239,10 @@ The kernel authenticates the manager by signing certificate (size `0x3e6`, SHA-2
 
 ## 10. Recommended path
 
-1. Flash **STABLE** (`Earth-Lineage24-KSUNext` from run #16). Use it for a few days.
-2. If it is stable and you want root hiding, flash **EXPERIMENTAL** and check `dmesg | grep -i susfs`.
+1. Flash **STABLE** (`Earth-Lineage24-KSUNext.zip` from release `earth-stable-19`). Use it for a few days.
+2. If it is stable and you want root hiding, flash **EXPERIMENTAL** (`earth-susfs-4`), install the
+   `sidex15/susfs4ksu-module` userspace module, reboot, then check `dmesg | grep -i susfs`.
+   See `SUSFS_USAGE_GUIDE.md` — the kernel alone hides nothing without that module.
 3. Report any misbehaviour; each change is isolated and reversible.
 
 **Nothing is flashed automatically. Installation waits for your approval.**

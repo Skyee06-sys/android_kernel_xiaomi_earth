@@ -4,6 +4,10 @@ on:
   workflow_dispatch:
   push:
     branches: [ main ]
+    # Documentation-only changes must not trigger a ~17 minute kernel rebuild
+    # (and must not publish a redundant release).
+    paths-ignore:
+      - '**.md'
 
 jobs:
   build:
