@@ -123,6 +123,11 @@ jobs:
             || git clone --depth=1 -b kernel-4.19 https://github.com/Zhanfg/susfs4ksu.git /tmp/susfs4ksu
           python3 "$GITHUB_WORKSPACE/scripts/port_susfs.py" --susfs /tmp/susfs4ksu
           echo "susfs_sha=$(git -C /tmp/susfs4ksu rev-parse HEAD)" >> /tmp/susfs_rev.txt
+          echo "susfs_remote=$(git -C /tmp/susfs4ksu remote get-url origin)" >> /tmp/susfs_rev.txt
+          # Record the SUSFS version actually compiled in - the userspace module
+          # (sidex15/susfs4ksu-module) requires 1.5.2 or later, so this must be visible.
+          echo "susfs_version=$(grep -m1 '#define SUSFS_VERSION' include/linux/susfs.h | cut -d'\"' -f2)" >> /tmp/susfs_rev.txt
+          echo "sus_su=disabled (CONFIG_KSU_SUSFS_SUS_SU=n, unsupported on non-GKI)" >> /tmp/susfs_rev.txt
           rm -rf /tmp/susfs4ksu
 
           # 4. Defconfig (KSU-Next, SUSFS, Gaming, Network, Memory & Battery)
