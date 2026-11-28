@@ -55,7 +55,7 @@ Your kernel ships **SUSFS v1.5.5**; the module requires **1.5.2+** → compatibl
 
 **Confirm it yourself:** each release ships `REVISIONS.txt` recording
 `susfs_version=`, `susfs_remote=`, `susfs_sha=` and the `sus_su` state:
-<https://github.com/Skyee06-sys/android_kernel_xiaomi_earth/releases/download/earth-susfs-4/REVISIONS.txt>
+<https://github.com/Skyee06-sys/android_kernel_xiaomi_earth/releases/download/earth-susfs-5/REVISIONS.txt>
 If it ever reports below 1.5.2, use an older module build instead.
 
 ---
@@ -64,8 +64,8 @@ If it ever reports below 1.5.2, use an older module build instead.
 
 | # | File | Link |
 |---|---|---|
-| 0 | **Stable kernel** (test this first) | [earth-stable-20](https://github.com/Skyee06-sys/android_kernel_xiaomi_earth/releases/tag/earth-stable-20) |
-| 1 | **Experimental kernel ZIP** | [earth-susfs-4](https://github.com/Skyee06-sys/android_kernel_xiaomi_earth/releases/tag/earth-susfs-4) |
+| 0 | **Stable kernel** (test this first) | [earth-stable-22](https://github.com/Skyee06-sys/android_kernel_xiaomi_earth/releases/tag/earth-stable-22) |
+| 1 | **Experimental kernel ZIP** | [earth-susfs-5](https://github.com/Skyee06-sys/android_kernel_xiaomi_earth/releases/tag/earth-susfs-5) |
 | 2 | **KernelSU-Next manager v3.4.2** | [APK](https://github.com/KernelSU-Next/KernelSU-Next/releases/download/v3.4.2/KernelSU_Next_v3.4.2_33355-release.apk) |
 | 3 | **SUSFS module v1.5.2+ R28** (~890 KB) | [ksu_module_susfs_1.5.2+.zip](https://github.com/sidex15/susfs4ksu-module/releases/download/v1.5.2%2B_R28/ksu_module_susfs_1.5.2%2B.zip) |
 
@@ -81,7 +81,7 @@ detect by package name). Either works; the kernel authenticates the manager by i
 ## Install order (do it in this order)
 
 ### Step 0 — Prove the stable kernel works first
-Flash **`Earth-Lineage24-KSUNext.zip`** from `earth-stable-20` and use it for a few
+Flash **`Earth-Lineage24-KSUNext.zip`** from `earth-stable-22` and use it for a few
 days. If the stable build misbehaves, the experimental one will too — and you'd
 waste time debugging the wrong thing.
 
