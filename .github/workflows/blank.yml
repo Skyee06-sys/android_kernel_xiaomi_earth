@@ -249,10 +249,13 @@ jobs:
           CONFIG_IP6_NF_TARGET_MASQUERADE=y
           CONFIG_NF_NAT_IPV6=y
           CONFIG_NETFILTER_XT_TARGET_TEE=y
-          # Extra filesystems for OTG/NAS media. NFS needs NETWORK_FILESYSTEMS above.
-          CONFIG_NFS_FS=y
-          CONFIG_NFS_V3=y
-          CONFIG_NFS_V4=y
+          # Extra filesystems for OTG/NAS media.
+          # NFS is NOT enabled: this tree has a latent build bug - fs/nfs/client.c
+          # sets rpc_clnt.cl_softerr, but include/linux/sunrpc/clnt.h has no such
+          # member, so fs/nfs/client.o fails to compile. It has never been built
+          # here (NFS is off in the stock defconfig). Fixing it properly needs a
+          # SUNRPC backport, which is out of scope for a stability-first release.
+          # CONFIG_NFS_FS / NFS_V3 / NFS_V4 stay off; NFSD too.
           CONFIG_SQUASHFS=y
           CONFIG_SQUASHFS_XZ=y
           CONFIG_SQUASHFS_LZ4=y
@@ -267,7 +270,7 @@ jobs:
           # Deliberately NOT enabled, with reasons:
           #  ZRAM_MEMORY_TRACKING - depends on DEBUG_FS, which stays off to avoid
           #    exposing kernel internals; it is a debugging aid, not a user feature.
-          #  NFSD - NFS *server* on a phone adds attack surface with no real use.
+          #  NFS_FS/NFSD - broken in this tree (rpc_clnt.cl_softerr missing), see above.
           #  9P_FS - virtio/plan9 transport, no use on this device.
           #  NTFS3 / sdfat - not present in this 4.19 tree (would need a backport);
           #    the in-tree NTFS (read/write) and exFAT drivers already cover this.
