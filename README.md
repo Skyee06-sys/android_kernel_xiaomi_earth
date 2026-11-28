@@ -70,6 +70,7 @@ The ZIP is locked to `earth`/`aether` and **refuses to flash** elsewhere.
 <tr><td>📊</td><td><b>Monitoring</b></td><td>CPU time-in-state, per-task delay accounting, schedstat, thermal stats</td></tr>
 <tr><td>🔓</td><td><b>Root</b></td><td>KernelSU-Next legacy, manual hooks, <code>path_umount</code> backport</td></tr>
 <tr><td>🕵️</td><td><b>SUSFS</b></td><td>v1.5.5, 13 options enabled — <b>experimental build only</b></td></tr>
+<tr><td>🛡️</td><td><b>Hardening</b></td><td>Slab freelist random+hardened, FORTIFY_SOURCE, strict usercopy, unprivileged BPF off</td></tr>
 </table>
 
 📖 Full rationale for every feature: [changelog/FEATURES.md](changelog/FEATURES.md)
@@ -126,6 +127,7 @@ trap, and the BBR-default bug.
 |---|---|---|
 | `blank.yml` | push to `main` (docs/tools excluded) | stable release |
 | `susfs.yml` | **manual only** | pre-release |
+| `experimental.yml` | **manual only** | pre-release (LTO/CFI/SCS) |
 
 ---
 

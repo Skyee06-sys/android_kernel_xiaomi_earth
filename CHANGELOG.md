@@ -49,6 +49,98 @@ was made and **what it should improve**. Newest first.
 
 ---
 
+## [Phases B + C1 + C2 + C3] — 2026-11-28
+
+**Kernel + CI change.** Stable and SUSFS gain C1/C2; C3 is isolated in a new
+manual-only experimental workflow. Source: this commit.
+
+### 🔧 Phase B — build system hardening
+
+| Change | Before | After | Why |
+|---|---|---|---|
+| **clang pinned** | `apt-get install clang` (drifts) | `CLANG_VERSION='18'`, uses `clang-18`/`ld.lld-18`/`llvm-*-18`, falls back **loudly** if absent | Reproducibility; a silent upstream clang bump could break the build |
+| **GCC binutils pinned** | `-b master` on `android.googlesource.com` | LineageOS GitHub mirrors at fixed SHAs `5e030ea` (aarch64) / `111258a` (arm), verified with `test -x` | `master` moves; also removes a host outside the allowlist |
+| **ccache** | none | `actions/cache@v4` + `CC="ccache …"`, stats reported | Every build was a full ~17 min compile |
+| **Job timeout** | none (6 h default) | `timeout-minutes: 60` | A hung job must not burn 6 hours |
+| **Concurrency** | none | `concurrency` group per workflow+ref, `cancel-in-progress` | Superseded pushes wasted runners |
+| **Warning accounting** | invisible (`-Wno-error`) | counted, top `[-W…]` categories listed, in job summary | `-Wno-error` is required by this vendor tree, but warnings must not be hidden |
+| **Build duration** | not reported | measured and reported | Requested reporting |
+| **Artifact validation** | image presence only | `unzip -t` integrity, image present, **device lock asserted**, REVISIONS/config present | A corrupt ZIP must never be published |
+| **Checksums** | none | `SHA256SUMS.txt` published as a release asset | Download integrity |
+| **Job summary** | none | `$GITHUB_STEP_SUMMARY` tables for metrics + validation | Visible without opening logs |
+| **REVISIONS.txt** | sources only | also compiler, requested pin, both toolchain SHAs, build seconds, warning count | Reproducibility evidence |
+
+### ✨ Phase C1 — safe hardening and tuning (12 options)
+
+`UCLAMP_BUCKETS_COUNT` **5 → 20**, `SLAB_FREELIST_RANDOM`, `SLAB_FREELIST_HARDENED`,
+`FORTIFY_SOURCE`, `BPF_UNPRIV_DEFAULT_OFF`, **`HARDENED_USERCOPY_FALLBACK` y → n**,
+`IDLE_PAGE_TRACKING`, `BLK_CGROUP_IOLATENCY`, `PACKET_DIAG`, `INET_UDP_DIAG`,
+`INET_RAW_DIAG`, `CGROUP_NET_PRIO`.
+
+- **Why:** `UCLAMP_BUCKETS_COUNT` sat at the bottom of its 5–20 range
+  (`init/Kconfig:726`) while EAS is genuinely active on this device, so clamp
+  granularity was needlessly coarse. `HARDENED_USERCOPY` was already on but
+  `FALLBACK=y` (`security/Kconfig:174-180`) downgraded violations to `WARN()`,
+  so the hardening was not actually strict.
+- **Expected benefit:** finer task-placement/boost precision; heap grooming made
+  unreliable; overflow detection; smaller unprivileged BPF surface; usable socket
+  and I/O-latency introspection. **Not measured.**
+- **Risk:** low. `HARDENED_USERCOPY_FALLBACK=n` can turn a latent vendor-driver
+  violation into a crash instead of a warning — that is the intent, and it is why
+  boot testing matters.
+
+### ✨ Phase C2 — additional subsystems (4 options)
+
+`TLS` (kTLS), `BPF_STREAM_PARSER` (sockmap), `BLK_DEV_THROTTLING`,
+`NF_CONNTRACK_TIMEOUT`.
+
+- **Why:** kTLS and sockmap give proxy/redirect paths a faster route; throttling
+  complements the C1 I/O-latency controller; custom conntrack timeouts suit
+  mobile-data flow churn.
+- **Side effects (predicted and observed):** `STREAM_PARSER=y`, `TLS_DEVICE=n`,
+  `BLK_DEV_THROTTLING_LOW=n`, `NF_CT_NETLINK_TIMEOUT=n`.
+
+### 🔧 Verifier — now asserts explicitly-disabled options
+
+Requesting `=n` was previously unverified, so Kconfig could silently re-enable a
+symbol via `default y` or a `select`. The verifier now checks `=n` requests in the
+final `.config` too. Dry run: **159 `=y` + 2 `=n` + 2 string/numeric**, exit 0.
+
+### 🧪 Phase C3 — new isolated experimental workflow
+
+`.github/workflows/experimental.yml` — **`workflow_dispatch` only, no `push`
+trigger**, publishes `earth-experimental-<n>` as a **pre-release**.
+
+Adds `LTO_CLANG`, `THINLTO`, `CFI_CLANG`, `CFI_PERMISSIVE`, `SHADOW_CALL_STACK`
+on top of the stable feature set. **SUSFS deliberately excluded** so an LTO failure
+cannot be confused with a SUSFS failure. Built with pinned **clang-16**, better
+matched to this 4.19 LTO backport than clang-18.
+
+Availability was verified in-tree, not assumed: `arch/arm64/Kconfig:61,62,63,988`,
+`arch/arm64/include/asm/scs.h`, `Makefile:864-877` (ThinLTO + llvm-ar/nm wiring),
+`Makefile:894-904` (CFI flags incl. permissive recover). Prerequisites confirmed:
+`KALLSYMS=y`, `KASAN` unset, `HAVE_C_RECORDMCOUNT=y`, `FTRACE_MCOUNT_RECORD` unset.
+
+`CFI_PERMISSIVE=y` is deliberate: violations WARN rather than panic, so a vendor
+driver violation is diagnosable instead of a bootloop.
+
+⚠️ **LTO on a 4.19 MediaTek vendor tree frequently fails.** A failure here is an
+expected, recorded outcome — not hidden. These options stay out of stable and
+SUSFS until boot **and** runtime testing succeed.
+
+### 📊 Verified before building
+
+- C1+C2: **16/16** options resolve as requested, including the `=n` request
+- Aggregate side effects: **5**, all predicted and documented
+- **Regression review: ZERO** previously-enabled options lost
+- Guards unchanged: `DEBUG_FS=n`, `NFS_FS=n`, `NFSD=n`, `NFT_COMPAT=y`,
+  `THERMAL_WRITABLE_TRIPS=y`, `ZRAM_MEMORY_TRACKING=n`, `SCHED_AUTOGROUP=n`,
+  `TRANSPARENT_HUGEPAGE=n`, `MODULE_SIG=n`
+- **`LTO_CLANG=n` in stable and SUSFS** — experimental isolation confirmed by config
+- All three workflow YAML files parse
+
+---
+
 ## [Phase A] — Documentation framework — 2026-11-28
 
 **Documentation only. No kernel, config or workflow change. No build triggered.**

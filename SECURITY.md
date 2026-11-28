@@ -52,7 +52,7 @@ the device "secure" — it documents which mitigations are actually compiled in.
 |---|---|---|
 | BPF syscall + JIT | `BPF_SYSCALL=y`, `BPF_JIT=y` | Required by Android |
 | **JIT always on** | `BPF_JIT_ALWAYS_ON=y` | Removes the interpreter (a known attack surface) |
-| Unprivileged BPF default-off | `BPF_UNPRIV_DEFAULT_OFF=n` | ⚠️ **Available-but-disabled** → approved for Phase C1 |
+| **Unprivileged BPF default-off** | `BPF_UNPRIV_DEFAULT_OFF=y` | ✅ **Enabled in Phase C1** |
 
 ---
 
@@ -60,13 +60,13 @@ the device "secure" — it documents which mitigations are actually compiled in.
 
 | Gap | Current | Plan | Trade-off |
 |---|---|---|---|
-| **Usercopy fallback weakens hardening** | `HARDENED_USERCOPY_FALLBACK=y` — violations only `WARN()` instead of failing (`security/Kconfig:174-180`, `default y`) | **C1: set `=n`** to make the check strict | Could surface a latent vendor-driver bug as a crash instead of a warning. That is the point, but it needs boot testing. |
-| Slab freelist not randomised | `SLAB_FREELIST_RANDOM=n` | **C1: enable** | Negligible cost; makes heap grooming unreliable |
-| Slab freelist not hardened | `SLAB_FREELIST_HARDENED=n` | **C1: enable** | ~1% slab overhead |
-| No compile-time bounds checks | `FORTIFY_SOURCE=n` | **C1: enable** | Small size increase |
-| Unprivileged BPF allowed | `BPF_UNPRIV_DEFAULT_OFF=n` | **C1: enable** | None for root |
+| **Usercopy fallback** | ✅ **Fixed in C1:** `HARDENED_USERCOPY_FALLBACK=n` — violations now fail instead of `WARN()` (`security/Kconfig:174-180`) | Done | May surface a latent vendor-driver bug as a crash rather than a warning. Boot testing required. |
+| Slab freelist randomisation | ✅ **Enabled in C1** (`SLAB_FREELIST_RANDOM=y`) | Done | Negligible |
+| Slab freelist hardening | ✅ **Enabled in C1** (`SLAB_FREELIST_HARDENED=y`) | Done | ~1% slab overhead |
+| Compile-time bounds checks | ✅ **Enabled in C1** (`FORTIFY_SOURCE=y`) | Done | Small size increase |
+
 | No ptrace restriction | `SECURITY_YAMA=n` | **Held** — your decision | May break KernelSU-Next, debuggers and root tools. Must be verified first. |
-| No CFI / LTO / shadow stack | all `n` | **C3 experimental only** | Real potential, but high risk of breaking MTK vendor drivers |
+| CFI / LTO / shadow stack | `n` in stable/SUSFS; **`y` in `experimental.yml`** with `CFI_PERMISSIVE=y` | Isolated experiment, manual-only pre-release | High risk of breaking MTK vendor drivers; excluded from stable until boot + runtime testing pass |
 | Modules unsigned | `MODULE_SIG=n` | **Declined** | Enabling auto-generates a random key per build (`MODULE_SIG_ALL=y`), breaking reproducibility, and is pointless without `SIG_FORCE` |
 | Zero-on-free | `INIT_ON_FREE_DEFAULT_ON=n` | **Declined** | Clears memory on every free — measurable cost, unclear gain given zero-on-alloc is already on |
 

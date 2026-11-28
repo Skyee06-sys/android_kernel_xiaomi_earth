@@ -38,7 +38,7 @@ stock** — that finding still holds and those were never re-added as features.
 
 ---
 
-## 🟢 Phase C1 — approved, not yet implemented
+## ✅ Phase C1 — implemented
 
 All validated with kconfiglib. **Zero unrequested side effects** unless noted.
 
@@ -55,12 +55,13 @@ All validated with kconfiglib. **Zero unrequested side effects** unless noted.
 | `PACKET_DIAG`, `INET_UDP_DIAG`, `INET_RAW_DIAG` | n → y | Proper `ss` socket introspection |
 | `CGROUP_NET_PRIO` | n → y | Per-cgroup network priority |
 
-**Gate:** compile + config assertion + artifact validation, then on-device boot
-testing. Docs updated in the same commit.
+**Status:** all 12 applied to stable and SUSFS. Validated 16/16 (with C2), zero
+regressions, guards unchanged. Docs updated in the same commit. **Boot testing
+still required.**
 
 ---
 
-## 🟡 Phase C2 — individual review required
+## ✅ Phase C2 — implemented (low-risk subset)
 
 | Option | Verified side effect | Open question |
 |---|---|---|
@@ -70,12 +71,16 @@ testing. Docs updated in the same commit.
 | `NF_CONNTRACK_TIMEOUT` | adds `NF_CT_NETLINK_TIMEOUT=n` | Useful for mobile-data flow churn? |
 | `F2FS_FS_COMPRESSION` | auto-selects LZ4 + LZO + ZSTD | Needs userspace/mount support; does **not** compress existing data |
 
-Each will be presented with evidence, before/after values and a regression review
-before implementation.
+**Implemented:** `TLS`, `BPF_STREAM_PARSER`, `BLK_DEV_THROTTLING`,
+`NF_CONNTRACK_TIMEOUT` — the four with small, fully-understood side effects.
+
+**Held back:** `F2FS_FS_COMPRESSION` stays out of stable. It changes filesystem
+behaviour and needs userspace/mount support, so it remains an experimental
+candidate rather than riding along in a daily-driver build.
 
 ---
 
-## 🟠 Phase C3 — experimental only
+## 🧪 Phase C3 — LTO/CFI/SCS now in an isolated workflow
 
 Never in a stable release until boot **and** runtime testing succeed.
 
@@ -95,7 +100,7 @@ Never in a stable release until boot **and** runtime testing succeed.
 
 ---
 
-## 🔵 Phase B — CI improvements (approved)
+## ✅ Phase B — CI improvements (implemented)
 
 | Item | Tracking |
 |---|---|

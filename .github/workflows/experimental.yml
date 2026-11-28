@@ -1,0 +1,717 @@
+name: EXPERIMENTAL earth Kernel (LTO + CFI + SCS, isolated, manual only)
+
+# EXPERIMENTAL ONLY. Manual trigger exclusively -- there is deliberately no
+# `push` trigger, so this can never run automatically or leak into a stable
+# release. Publishes as a pre-release with its own tag namespace.
+on:
+  workflow_dispatch:
+
+# Phase B: superseded runs are cancelled instead of wasting runners.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # Phase B: a hung job must not consume the 6-hour default.
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    env:
+      # Phase B: pinned toolchain. ubuntu-24.04 runners ship clang 16/17/18.
+      # The exact version used is recorded in REVISIONS.txt; if the pinned
+      # binary is missing the build falls back to `clang` and says so loudly.
+      CLANG_VERSION: '16'
+      GCC64_SHA: '5e030eafe024784a73cdf47e6936ac0dbfc763dc'
+      GCC32_SHA: '111258a10e017f067b27e6cfcea7619d753f3309'
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 2G
+      CCACHE_COMPILERCHECK: content
+    steps:
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves zip python3 cpio wget git clang lld llvm ccache
+          echo "== available clang versions =="
+          ls -1 /usr/bin/clang-* 2>/dev/null | head -10 || true
+
+      - name: Clone & Patch Kernel (KSU-Next + earth tweaks)
+        run: |
+          git clone --depth=1 -b lineage-24.0 https://github.com/LineageOS/android_kernel_xiaomi_earth.git kernel
+          cd kernel
+
+          # 1. KernelSU-Next (legacy)
+          git clone --depth=1 -b legacy https://github.com/KernelSU-Next/KernelSU-Next.git KernelSU-Next
+          ln -s ../KernelSU-Next/kernel drivers/kernelsu
+          echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
+          echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
+
+          # 2. SUSFS is intentionally NOT integrated in this stable build.
+          # KernelSU-Next 'legacy' contains no SUSFS support at all (verified: zero
+          # susfs files and no KSU_SUSFS Kconfig symbols upstream), so copying the
+          # susfs4ksu sources here would only apply a partial, non-functional patch.
+          # The SUSFS port is developed and tested separately in susfs.yml so it can
+          # never destabilise this release. Root (KernelSU-Next) works normally.
+
+          # 2b. WireGuard: earth already ships WireGuard in-tree at
+          # drivers/net/wireguard (v1.0.0, wired via drivers/net/{Makefile,Kconfig}).
+          # It is the modern, already-backported driver (uses the kernel's
+          # ktime_get_coarse_boottime_ns / dst_cache_reset_now and selects its own
+          # crypto libs), so NO compat layer is needed. We only enable it via
+          # CONFIG_WIREGUARD=y in the defconfig below. Adding a second copy at
+          # net/wireguard would build the driver twice and duplicate every symbol
+          # at link time, so we deliberately do not clone wireguard-linux-compat.
+
+          # 3. Apply KSU-Next manual hooks & SUSFS struct/namespace fixes
+          python3 - << 'PY'
+          def patch_file(path, old, new):
+              with open(path, "r") as f:
+                  s = f.read()
+              assert old in s, f"Pattern not found in {path}"
+              with open(path, "w") as f:
+                  f.write(s.replace(old, new, 1))
+
+          # fs/exec.c
+          patch_file("fs/exec.c",
+              "static int do_execveat_common(int fd, struct filename *filename,\n\t\t\t      struct user_arg_ptr argv,\n\t\t\t      struct user_arg_ptr envp,\n\t\t\t      int flags)\n{",
+              "#ifdef CONFIG_KSU\nextern bool ksu_execveat_hook __read_mostly;\nextern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags);\nextern int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags);\n#endif\nstatic int do_execveat_common(int fd, struct filename *filename,\n\t\t\t      struct user_arg_ptr argv,\n\t\t\t      struct user_arg_ptr envp,\n\t\t\t      int flags)\n{\n#ifdef CONFIG_KSU\n\tif (unlikely(ksu_execveat_hook))\n\t\tksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);\n\telse\n\t\tksu_handle_execveat_sucompat(&fd, &filename, &argv, &envp, &flags);\n#endif")
+
+          # fs/open.c
+          patch_file("fs/open.c",
+              "long do_faccessat(int dfd, const char __user *filename, int mode)\n{",
+              "#ifdef CONFIG_KSU\nextern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *flags);\n#endif\nlong do_faccessat(int dfd, const char __user *filename, int mode)\n{\n#ifdef CONFIG_KSU\n\tksu_handle_faccessat(&dfd, &filename, &mode, NULL);\n#endif")
+
+          # fs/read_write.c
+          patch_file("fs/read_write.c",
+              "ssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)\n{\n\tssize_t ret;",
+              "#ifdef CONFIG_KSU\nextern bool ksu_vfs_read_hook __read_mostly;\nextern int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr, size_t *count_ptr, loff_t **pos);\n#endif\nssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)\n{\n\tssize_t ret;\n#ifdef CONFIG_KSU\n\tif (unlikely(ksu_vfs_read_hook))\n\t\tksu_handle_vfs_read(&file, &buf, &count, &pos);\n#endif")
+
+          # fs/stat.c
+          patch_file("fs/stat.c",
+              "int vfs_statx(int dfd, const char __user *filename, int flags,\n\t      struct kstat *stat, u32 request_mask)\n{",
+              "#ifdef CONFIG_KSU\nextern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);\n#endif\nint vfs_statx(int dfd, const char __user *filename, int flags,\n\t      struct kstat *stat, u32 request_mask)\n{\n#ifdef CONFIG_KSU\n\tksu_handle_stat(&dfd, &filename, &flags);\n#endif")
+
+          # kernel/reboot.c
+          patch_file("kernel/reboot.c",
+              "SYSCALL_DEFINE4(reboot, int, magic1, int, magic2, unsigned int, cmd,\n\t\tvoid __user *, arg)\n{",
+              "#ifdef CONFIG_KSU\nextern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user **arg);\n#endif\nSYSCALL_DEFINE4(reboot, int, magic1, int, magic2, unsigned int, cmd,\n\t\tvoid __user *, arg)\n{\n#ifdef CONFIG_KSU\n\tksu_handle_sys_reboot(magic1, magic2, cmd, &arg);\n#endif")
+
+          # include/linux/mount.h
+          patch_file("include/linux/mount.h",
+              "\tANDROID_KABI_RESERVE(4);\n} __randomize_layout;",
+              "#ifdef CONFIG_KSU_SUSFS\n\tANDROID_KABI_USE(4, u64 susfs_mnt_id_backup);\n#else\n\tANDROID_KABI_RESERVE(4);\n#endif\n} __randomize_layout;")
+
+          # include/linux/sched.h
+          patch_file("include/linux/sched.h",
+              "\tANDROID_KABI_RESERVE(8);",
+              "#ifdef CONFIG_KSU_SUSFS\n\tANDROID_KABI_USE(8, u64 susfs_last_fake_mnt_id);\n#else\n\tANDROID_KABI_RESERVE(8);\n#endif")
+
+          # fs/proc/task_mmu.c
+          patch_file("fs/proc/task_mmu.c",
+              "#include <linux/pkeys.h>",
+              "#include <linux/pkeys.h>\n#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT\n#include <linux/susfs_def.h>\n#endif")
+
+          # fs/namespace.c
+          patch_file("fs/namespace.c",
+              "#include <linux/fs_context.h>",
+              "#include <linux/fs_context.h>\n#if defined(CONFIG_KSU_SUSFS_SUS_MOUNT) || defined(CONFIG_KSU_SUSFS_TRY_UMOUNT)\n#include <linux/susfs_def.h>\n#endif")
+
+          # Backport path_umount() for kernels < 5.9 (earth is 4.19).
+          # KernelSU-Next's feature/kernel_umount.c calls path_umount() whenever
+          # KSU_HAS_PATH_UMOUNT is set (its Kbuild greps fs/namespace.c for it).
+          # Without the definition the vmlinux link fails:
+          #   ld.lld: error: undefined symbol: path_umount
+          # This is the upstream 5.9 implementation, per KernelSU's non-GKI guide.
+          import re
+          with open("fs/namespace.c") as f:
+              _ns = f.read()
+          if re.search(r"^int path_umount\s*\(", _ns, re.M):
+              print("path_umount already defined, skipping backport")
+          else:
+              patch_file("fs/namespace.c",
+                  "/*\n * Now umount can handle mount points as well as block devices.",
+                  "static int can_umount(const struct path *path, int flags)\n{\n\tstruct mount *mnt = real_mount(path->mnt);\n\n\tif (flags & ~(MNT_FORCE | MNT_DETACH | MNT_EXPIRE | UMOUNT_NOFOLLOW))\n\t\treturn -EINVAL;\n\tif (!may_mount())\n\t\treturn -EPERM;\n\tif (path->dentry != path->mnt->mnt_root)\n\t\treturn -EINVAL;\n\tif (!check_mnt(mnt))\n\t\treturn -EINVAL;\n\tif (mnt->mnt.mnt_flags & MNT_LOCKED) /* Check optimistically */\n\t\treturn -EINVAL;\n\tif (flags & MNT_FORCE && !capable(CAP_SYS_ADMIN))\n\t\treturn -EPERM;\n\treturn 0;\n}\n\n// caller is responsible for flags being sane\nint path_umount(struct path *path, int flags)\n{\n\tstruct mount *mnt = real_mount(path->mnt);\n\tint ret;\n\n\tret = can_umount(path, flags);\n\tif (!ret)\n\t\tret = do_umount(mnt, flags);\n\n\t/* we mustn't call path_put() as that would clear mnt_expiry_mark */\n\tdput(path->dentry);\n\tmntput_no_expire(mnt);\n\treturn ret;\n}\n\n/*\n * Now umount can handle mount points as well as block devices.")
+              print("path_umount backported into fs/namespace.c")
+          PY
+
+          # 4. Defconfig (KSU-Next, SUSFS, Gaming, Network, Memory & Battery)
+          cat << 'EOF' > /tmp/requested-config.txt
+          # Root & Hiding
+          CONFIG_KSU=y
+          CONFIG_KSU_MANUAL_HOOK=y
+          CONFIG_KSU_KPROBES_HOOK=n
+          # SUSFS: not claimed as supported. See susfs.yml for the isolated port.
+          CONFIG_SECURITYFS=y
+
+          # Network & Gaming Latency
+          CONFIG_TCP_CONG_ADVANCED=y
+          CONFIG_TCP_CONG_BBR=y
+          CONFIG_TCP_CONG_WESTWOOD=y
+          CONFIG_DEFAULT_TCP_CONG="bbr"
+          CONFIG_NET_SCH_FQ=y
+
+          # Memory, ZRAM, Performance & Battery
+          CONFIG_ZRAM=y
+          CONFIG_ZSMALLOC=y
+          CONFIG_CRYPTO_LZ4=y
+          CONFIG_CRYPTO_ZSTD=y
+          CONFIG_CLEANCACHE=y
+          CONFIG_FRONTSWAP=y
+          CONFIG_CPU_FREQ_DEFAULT_GOV_SCHEDUTIL=y
+          CONFIG_NO_HZ_IDLE=y
+          CONFIG_HZ_250=y
+          CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y
+
+          # --- Added features: network, governors, I/O, memory, filesystems ---
+          # WireGuard VPN (already in-tree at drivers/net/wireguard; just enable it)
+          CONFIG_WIREGUARD=y
+          # Tethering bypass (TTL/HL targets), ipset, extra TCP congestion controls
+          CONFIG_IP_NF_TARGET_TTL=y
+          CONFIG_IP6_NF_TARGET_HL=y
+          CONFIG_IP_SET=y
+          CONFIG_IP_SET_BITMAP_IP=y
+          CONFIG_IP_SET_BITMAP_IPMAC=y
+          CONFIG_IP_SET_BITMAP_PORT=y
+          CONFIG_IP_SET_HASH_IP=y
+          CONFIG_IP_SET_HASH_IPMAC=y
+          CONFIG_IP_SET_HASH_IPMARK=y
+          CONFIG_IP_SET_HASH_IPPORT=y
+          CONFIG_IP_SET_HASH_IPPORTIP=y
+          CONFIG_IP_SET_HASH_IPPORTNET=y
+          CONFIG_IP_SET_HASH_MAC=y
+          CONFIG_IP_SET_HASH_NET=y
+          CONFIG_IP_SET_HASH_NETNET=y
+          CONFIG_IP_SET_HASH_NETPORT=y
+          CONFIG_IP_SET_HASH_NETPORTNET=y
+          CONFIG_IP_SET_HASH_NETIFACE=y
+          CONFIG_IP_SET_LIST_SET=y
+          CONFIG_NETFILTER_XT_SET=y
+          CONFIG_TCP_CONG_CUBIC=y
+          CONFIG_TCP_CONG_VEGAS=y
+          CONFIG_TCP_CONG_VENO=y
+          CONFIG_TCP_CONG_YEAH=y
+          CONFIG_TCP_CONG_ILLINOIS=y
+          CONFIG_TCP_CONG_LP=y
+          CONFIG_TCP_CONG_SCALABLE=y
+          CONFIG_TCP_CONG_HTCP=y
+          # Extra CPU governors & I/O schedulers
+          CONFIG_CPU_FREQ_GOV_PERFORMANCE=y
+          CONFIG_CPU_FREQ_GOV_CONSERVATIVE=y
+          CONFIG_IOSCHED_BFQ=y
+          CONFIG_BFQ_GROUP_IOSCHED=y
+          CONFIG_MQ_IOSCHED_KYBER=y
+          CONFIG_MQ_IOSCHED_DEADLINE=y
+          # Memory & swap (zswap/z3fold rely on FRONTSWAP above)
+          CONFIG_SWAP=y
+          CONFIG_KSM=y
+          CONFIG_ZSWAP=y
+          CONFIG_Z3FOLD=y
+          CONFIG_ZBUD=y
+          CONFIG_CRYPTO_LZO=y
+          # Network filesystems (CIFS/SMB)
+          CONFIG_NETWORK_FILESYSTEMS=y
+          CONFIG_CIFS=y
+
+          # --- Tier A: verified-available options (all validated =y by kconfiglib) ---
+          # DDR devfreq governors. MACH_MT6768=y builds drivers/devfreq/helio-dvfsrc-v2,
+          # so these give real DDR frequency governor choice on this SoC.
+          # No frequencies are forced; the driver's own OPP table is respected.
+          CONFIG_DEVFREQ_GOV_SIMPLE_ONDEMAND=y
+          CONFIG_DEVFREQ_GOV_PERFORMANCE=y
+          CONFIG_DEVFREQ_GOV_POWERSAVE=y
+          CONFIG_DEVFREQ_GOV_USERSPACE=y
+          CONFIG_DEVFREQ_GOV_PASSIVE=y
+          # Thermal governors. Hardware protection is PRESERVED: we only add
+          # governor choices, we never remove a cooling device or trip point.
+          # MTK_LEGACY_THERMAL and the stock backward-compatible governor stay on.
+          CONFIG_THERMAL_GOV_STEP_WISE=y
+          CONFIG_THERMAL_GOV_FAIR_SHARE=y
+          CONFIG_THERMAL_GOV_BANG_BANG=y
+          CONFIG_THERMAL_GOV_USER_SPACE=y
+          CONFIG_THERMAL_GOV_POWER_ALLOCATOR=y
+          CONFIG_THERMAL_WRITABLE_TRIPS=y
+          CONFIG_DEVFREQ_THERMAL=y
+          CONFIG_THERMAL_STATISTICS=y
+          # Queue disciplines: CAKE/FQ_CODEL/PIE/CoDel for bufferbloat, NETEM for
+          # testing, plus shaping/classful qdiscs. Existing FQ + HTB are kept.
+          CONFIG_NET_SCH_CAKE=y
+          CONFIG_NET_SCH_FQ_CODEL=y
+          CONFIG_NET_SCH_PIE=y
+          CONFIG_NET_SCH_CODEL=y
+          CONFIG_NET_SCH_NETEM=y
+          CONFIG_NET_SCH_HFSC=y
+          CONFIG_NET_SCH_PRIO=y
+          CONFIG_NET_SCH_SFQ=y
+          CONFIG_NET_SCH_TBF=y
+          CONFIG_NET_SCH_INGRESS=y
+          CONFIG_NET_SCH_MQPRIO=y
+          # Remaining in-tree TCP congestion controls (BIC was already enabled).
+          # BBR stays the default; these are alternatives, not replacements.
+          CONFIG_TCP_CONG_DCTCP=y
+          CONFIG_TCP_CONG_HSTCP=y
+          CONFIG_TCP_CONG_HYBLA=y
+          CONFIG_TCP_CONG_NV=y
+          CONFIG_TCP_CONG_CDG=y
+          # nftables (was completely absent) + IPv6 NAT + TEE target.
+          # iptables/xt compatibility is kept via NFT_COMPAT so Android's
+          # existing netd rules keep working.
+          CONFIG_NF_TABLES=y
+          CONFIG_NF_TABLES_INET=y
+          CONFIG_NFT_COMPAT=y
+          CONFIG_NFT_NAT=y
+          CONFIG_NFT_MASQ=y
+          CONFIG_NFT_REDIR=y
+          CONFIG_NFT_CT=y
+          CONFIG_NFT_COUNTER=y
+          CONFIG_NFT_LOG=y
+          CONFIG_NFT_LIMIT=y
+          CONFIG_NFT_REJECT=y
+          CONFIG_IP6_NF_NAT=y
+          CONFIG_IP6_NF_TARGET_MASQUERADE=y
+          CONFIG_NF_NAT_IPV6=y
+          CONFIG_NETFILTER_XT_TARGET_TEE=y
+          # Extra filesystems for OTG/NAS media.
+          # NFS is NOT enabled: this tree has a latent build bug - fs/nfs/client.c
+          # sets rpc_clnt.cl_softerr, but include/linux/sunrpc/clnt.h has no such
+          # member, so fs/nfs/client.o fails to compile. It has never been built
+          # here (NFS is off in the stock defconfig). Fixing it properly needs a
+          # SUNRPC backport, which is out of scope for a stability-first release.
+          # CONFIG_NFS_FS / NFS_V3 / NFS_V4 stay off; NFSD too.
+          CONFIG_SQUASHFS=y
+          CONFIG_SQUASHFS_XZ=y
+          CONFIG_SQUASHFS_LZ4=y
+          CONFIG_SQUASHFS_ZSTD=y
+          CONFIG_XFS_FS=y
+          CONFIG_BTRFS_FS=y
+          CONFIG_HFSPLUS_FS=y
+          CONFIG_UDF_FS=y
+          CONFIG_JFS_FS=y
+          # Faster kernel decompression at boot (replaces default GZIP).
+          CONFIG_KERNEL_LZ4=y
+          # Deliberately NOT enabled, with reasons:
+          #  ZRAM_MEMORY_TRACKING - depends on DEBUG_FS, which stays off to avoid
+          #    exposing kernel internals; it is a debugging aid, not a user feature.
+          #  NFS_FS/NFSD - broken in this tree (rpc_clnt.cl_softerr missing), see above.
+          #  9P_FS - virtio/plan9 transport, no use on this device.
+          #  NTFS3 / sdfat - not present in this 4.19 tree (would need a backport);
+          #    the in-tree NTFS (read/write) and exFAT drivers already cover this.
+          # --- Traffic control: classifiers + actions -------------------------
+          # The qdiscs added earlier (CAKE/FQ_CODEL/PIE/...) could be attached but
+          # not fed: without NET_CLS_*/NET_ACT_* `tc` cannot classify traffic into
+          # classes or police it. This completes that work. Additive only.
+          CONFIG_NET_CLS=y
+          CONFIG_NET_CLS_ACT=y
+          CONFIG_NET_CLS_U32=y
+          CONFIG_NET_CLS_FLOWER=y
+          CONFIG_NET_CLS_CGROUP=y
+          CONFIG_NET_ACT_POLICE=y
+          CONFIG_NET_ACT_MIRRED=y
+          # --- Transparent proxy / per-app firewall / nft extras --------------
+          # TPROXY + MATCH_SOCKET let proxy clients (Clash/v2ray/SagerNet) intercept
+          # transparently. MATCH_OWNER enables uid-based per-app rules (AFWall+).
+          # QUOTA/TIME add data caps and schedules; NOTRACK bypasses conntrack.
+          # NFT_COMPAT stays on so Android netd's existing iptables rules work.
+          CONFIG_NFT_TPROXY=y
+          CONFIG_NFT_FIB_IPV4=y
+          CONFIG_NFT_FIB_IPV6=y
+          CONFIG_NFT_FIB_INET=y
+          CONFIG_NFT_FIB=y
+          CONFIG_NFT_SOCKET=y
+          CONFIG_NFT_OSF=y
+          CONFIG_NETFILTER_INGRESS=y
+          CONFIG_NF_FLOW_TABLE=y
+          CONFIG_NF_FLOW_TABLE_INET=y
+          CONFIG_NFT_FLOW_OFFLOAD=y
+          CONFIG_NETFILTER_XT_TARGET_TPROXY=y
+          CONFIG_NETFILTER_XT_TARGET_NOTRACK=y
+          CONFIG_NETFILTER_XT_MATCH_OWNER=y
+          CONFIG_NETFILTER_XT_MATCH_QUOTA=y
+          CONFIG_NETFILTER_XT_MATCH_TIME=y
+          CONFIG_NETFILTER_XT_MATCH_SOCKET=y
+          # --- Monitoring: lets performance/battery be measured, not guessed ---
+          # CPU_FREQ_TIMES -> time-in-state (real frequency residency for battery
+          # analysis). TASKSTATS/DELAY_ACCT/XACCT/IO_ACCOUNTING -> per-task CPU and
+          # I/O delay accounting. SCHEDSTATS -> /proc/schedstat. SCHEDSTATS needs
+          # DEBUG_KERNEL + PROC_FS, NOT DEBUG_FS, so DEBUG_FS stays off.
+          CONFIG_CPU_FREQ_TIMES=y
+          CONFIG_TASKSTATS=y
+          CONFIG_TASK_DELAY_ACCT=y
+          CONFIG_TASK_XACCT=y
+          CONFIG_TASK_IO_ACCOUNTING=y
+          CONFIG_SCHEDSTATS=y
+          # --- FIX: BBR was never actually the default -------------------------
+          # CONFIG_DEFAULT_TCP_CONG is a promptless string derived from the
+          # "Default TCP congestion control" choice, so assigning it directly is
+          # silently discarded and the choice default (CUBIC) won. Selecting
+          # DEFAULT_BBR is the only way to make DEFAULT_TCP_CONG="bbr".
+          # Validated with kconfiglib: DEFAULT_BBR=y, DEFAULT_CUBIC=n,
+          # DEFAULT_TCP_CONG="bbr". The string below is kept for readability.
+          CONFIG_DEFAULT_BBR=y
+          # ================= Phase C1: safe hardening + tuning =================
+          # Each validated individually with kconfiglib against the real tree;
+          # whole-config diff showed NO unrequested side effects unless noted.
+          # UCLAMP_BUCKETS_COUNT: 5 -> 20. Range is 5..20 (init/Kconfig:726), so
+          # this moves clamp granularity from 20% to 5% buckets. EAS is active on
+          # this device (MTK registers the EM at mtk_cpufreq_main.c:1302), so
+          # finer clamping affects real task placement. Expected, not measured.
+          CONFIG_UCLAMP_BUCKETS_COUNT=20
+          # Slab allocator hardening: randomise allocation order and validate
+          # freelist pointers. Makes heap grooming unreliable.
+          CONFIG_SLAB_FREELIST_RANDOM=y
+          CONFIG_SLAB_FREELIST_HARDENED=y
+          # Compile-time + runtime bounds checks on string/memory operations.
+          # Benign side effect: the PROFILE_ALL_BRANCHES choice entry disappears.
+          CONFIG_FORTIFY_SOURCE=y
+          # Unprivileged BPF off by default. Root/Android usage unaffected.
+          CONFIG_BPF_UNPRIV_DEFAULT_OFF=y
+          # HARDENED_USERCOPY is already on, but FALLBACK defaults to y
+          # (security/Kconfig:174-180) which downgrades violations to WARN().
+          # Setting n makes the existing hardening actually strict.
+          CONFIG_HARDENED_USERCOPY_FALLBACK=n
+          # Idle page tracking for memory analysis (mm/page_idle.c).
+          CONFIG_IDLE_PAGE_TRACKING=y
+          # Per-cgroup I/O latency targets (block/blk-iolatency.c).
+          CONFIG_BLK_CGROUP_IOLATENCY=y
+          # Socket introspection so `ss` reports properly (net/core/sock_diag.c).
+          CONFIG_PACKET_DIAG=y
+          CONFIG_INET_UDP_DIAG=y
+          CONFIG_INET_RAW_DIAG=y
+          # Per-cgroup network priority (net/core/netprio_cgroup.c).
+          CONFIG_CGROUP_NET_PRIO=y
+          # ================= Phase C2: additional subsystems ===================
+          # kTLS: TLS record handling in-kernel. Selects STREAM_PARSER=y.
+          CONFIG_TLS=y
+          # sockmap / stream parser for BPF-based proxy redirection.
+          CONFIG_BPF_STREAM_PARSER=y
+          # Per-cgroup I/O bandwidth caps. Adds BLK_DEV_THROTTLING_LOW=n.
+          CONFIG_BLK_DEV_THROTTLING=y
+          # Custom conntrack timeouts. Adds NF_CT_NETLINK_TIMEOUT=n.
+          CONFIG_NF_CONNTRACK_TIMEOUT=y
+          # ================= Phase C3: EXPERIMENTAL ONLY =======================
+          # LTO + CFI + Shadow Call Stack. Never enabled in stable/susfs builds.
+          # Availability verified in-tree, not assumed:
+          #   arch/arm64/Kconfig:61  select ARCH_SUPPORTS_LTO_CLANG
+          #   arch/arm64/Kconfig:62  select ARCH_SUPPORTS_THINLTO
+          #   arch/arm64/Kconfig:63  select ARCH_SUPPORTS_SHADOW_CALL_STACK
+          #                          if CC_HAVE_SHADOW_CALL_STACK (clang >= 7)
+          #   arch/arm64/include/asm/scs.h present
+          #   Makefile:864-877 ThinLTO flags + llvm-ar/llvm-nm wiring
+          #   Makefile:894-904 CFI flags, incl. CFI_PERMISSIVE recover mode
+          # Prerequisites confirmed: KALLSYMS=y, KASAN unset,
+          # HAVE_C_RECORDMCOUNT=y, FTRACE_MCOUNT_RECORD unset.
+          # CFI_PERMISSIVE=y is deliberate: violations WARN instead of panicking,
+          # so a vendor-driver violation is diagnosable rather than a bootloop.
+          CONFIG_LTO_CLANG=y
+          CONFIG_THINLTO=y
+          CONFIG_CFI_CLANG=y
+          CONFIG_CFI_PERMISSIVE=y
+          CONFIG_SHADOW_CALL_STACK=y
+          EOF
+          # Record exactly what we request so verification checks our options,
+          # not unrelated stock defconfig entries that Kconfig may drop.
+          cat /tmp/requested-config.txt >> arch/arm64/configs/earth_defconfig
+
+      - name: Setup GCC Binutils
+        run: |
+          # Phase B: pinned to fixed commits on GitHub mirrors instead of a
+          # moving `-b master` on android.googlesource.com. Reproducible, and
+          # removes a dependency on a host outside the project's allowlist.
+          set -e
+          git clone --depth=1 -b lineage-19.1 \
+            https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9.git toolchain/gcc64
+          git -C toolchain/gcc64 fetch --depth=1 origin "$GCC64_SHA"
+          git -C toolchain/gcc64 checkout --detach "$GCC64_SHA"
+          git clone --depth=1 -b lineage-19.1 \
+            https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9.git toolchain/gcc32
+          git -C toolchain/gcc32 fetch --depth=1 origin "$GCC32_SHA"
+          git -C toolchain/gcc32 checkout --detach "$GCC32_SHA"
+          echo "gcc64 pinned: $(git -C toolchain/gcc64 rev-parse HEAD)"
+          echo "gcc32 pinned: $(git -C toolchain/gcc32 rev-parse HEAD)"
+          test -x toolchain/gcc64/bin/aarch64-linux-android-ld || { echo "::error title=Toolchain::aarch64 binutils missing"; exit 1; }
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-${{ github.workflow }}-${{ env.CLANG_VERSION }}-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ github.workflow }}-${{ env.CLANG_VERSION }}-
+            ccache-${{ github.workflow }}-
+
+      - name: Compile Kernel
+        run: |
+          export PATH="$PWD/toolchain/gcc64/bin:$PWD/toolchain/gcc32/bin:$PATH"
+          # Phase B: select the pinned clang, fall back loudly if absent.
+          if command -v "clang-$CLANG_VERSION" >/dev/null 2>&1; then
+            KCC="clang-$CLANG_VERSION"; KLD="ld.lld-$CLANG_VERSION"
+            KAR="llvm-ar-$CLANG_VERSION"; KNM="llvm-nm-$CLANG_VERSION"
+            KOC="llvm-objcopy-$CLANG_VERSION"; KOD="llvm-objdump-$CLANG_VERSION"; KST="llvm-strip-$CLANG_VERSION"
+          else
+            echo "::warning title=Toolchain::clang-$CLANG_VERSION not found; falling back to unpinned clang"
+            KCC=clang; KLD=ld.lld; KAR=llvm-ar; KNM=llvm-nm
+            KOC=llvm-objcopy; KOD=llvm-objdump; KST=llvm-strip
+          fi
+          command -v "$KLD" >/dev/null 2>&1 || KLD=ld.lld
+          command -v "$KAR" >/dev/null 2>&1 || KAR=llvm-ar
+          command -v "$KNM" >/dev/null 2>&1 || KNM=llvm-nm
+          command -v "$KOC" >/dev/null 2>&1 || KOC=llvm-objcopy
+          command -v "$KOD" >/dev/null 2>&1 || KOD=llvm-objdump
+          command -v "$KST" >/dev/null 2>&1 || KST=llvm-strip
+          echo "compiler: $($KCC --version | head -1)"
+          echo "linker:   $($KLD --version | head -1)"
+          echo "$($KCC --version | head -1)" > /tmp/clang_version.txt
+          ccache --zero-stats >/dev/null 2>&1 || true
+          ccache --max-size="$CCACHE_MAXSIZE" >/dev/null 2>&1 || true
+          BUILD_START=$(date +%s)
+          echo "$BUILD_START" > /tmp/build_start.txt
+          cd kernel
+          make O=out ARCH=arm64 earth_defconfig
+          set -o pipefail
+          make -j$(nproc --all) O=out \
+            ARCH=arm64 \
+            SUBARCH=arm64 \
+            CC="ccache $KCC" \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-android- \
+            CROSS_COMPILE_ARM32=arm-linux-androideabi- \
+            LD="$KLD" \
+            AR="$KAR" \
+            NM="$KNM" \
+            OBJCOPY="$KOC" \
+            OBJDUMP="$KOD" \
+            STRIP="$KST" \
+            KCFLAGS="-Wno-error" \
+            Image.gz-dtb 2>&1 | tee /tmp/compile.log || {
+              echo "::error title=Kernel compile failed::error lines extracted below"
+              grep -nE "error:|fatal error|undefined symbol|undefined reference|duplicate symbol|>>>|defined in|No rule to make target|Error [0-9]" /tmp/compile.log | head -60 | while IFS= read -r l; do
+                printf '::error title=Compile error::%s\n' "$l"
+              done
+              echo "::error title=WireGuard archive contents::$(find out -path '*wireguard*' -name 'built-in.a' -exec llvm-ar t {} \; 2>/dev/null | sort | uniq -c | sort -rn | head -8 | tr '\n' ' ')"
+              tail -n 15 /tmp/compile.log | while IFS= read -r l; do
+                printf '::error title=Compile tail::%s\n' "$l"
+              done
+              exit 1
+            }
+
+          # ---- Phase B: build metrics, warning accounting, ccache stats ----
+          BUILD_END=$(date +%s); BUILD_START=$(cat /tmp/build_start.txt 2>/dev/null || echo "$BUILD_END")
+          DURATION=$((BUILD_END - BUILD_START))
+          WARN_COUNT=$(grep -c 'warning:' /tmp/compile.log 2>/dev/null || echo 0)
+          ERR_COUNT=$(grep -c 'error:' /tmp/compile.log 2>/dev/null || echo 0)
+          echo "$DURATION" > /tmp/build_duration.txt
+          echo "$WARN_COUNT" > /tmp/warn_count.txt
+          echo "== build duration: ${DURATION}s =="
+          echo "== compiler warnings: $WARN_COUNT (errors: $ERR_COUNT) =="
+          # -Wno-error is required by this vendor tree, so warnings never fail the
+          # build. They must still be visible: surface the most frequent kinds.
+          if [ "$WARN_COUNT" -gt 0 ]; then
+            echo "== top warning categories =="
+            grep -o '\[-W[a-z0-9-]*\]' /tmp/compile.log 2>/dev/null | sort | uniq -c | sort -rn | head -12 || true
+          fi
+          echo "== ccache statistics =="
+          ccache --show-stats 2>/dev/null | head -14 || true
+          {
+            echo "### Kernel build metrics"
+            echo ""
+            echo "| Metric | Value |"
+            echo "|---|---|"
+            echo "| Compiler | $(cat /tmp/clang_version.txt 2>/dev/null || echo unknown) |"
+            echo "| Duration | ${DURATION}s |"
+            echo "| Warnings | ${WARN_COUNT} |"
+            echo "| Errors | ${ERR_COUNT} |"
+            echo "| Image bytes | $(stat -c%s out/arch/arm64/boot/Image.gz-dtb 2>/dev/null || echo n/a) |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify kernel, configuration and symbols
+        run: |
+          set -o pipefail
+          cd kernel
+          IMG=out/arch/arm64/boot/Image.gz-dtb
+          test -s "$IMG" || { echo "::error title=Verify::kernel image missing or empty"; exit 1; }
+          echo "Image: $(stat -c%s "$IMG") bytes"
+          echo "== architecture =="
+          llvm-readelf -h out/vmlinux | grep -E "Class|Machine|Type"
+          llvm-readelf -h out/vmlinux | grep -q "AArch64" || { echo "::error title=Verify::not an ARM64 kernel"; exit 1; }
+
+          echo "== configuration verification =="
+          python3 - << 'PYEOF'
+          import re, sys
+          want = []
+          want_str = {}
+          want_off = []
+          src = open('/tmp/requested-config.txt').read()
+          for line in src.splitlines():
+              line = line.strip()
+              m = re.match(r'^CONFIG_([A-Z0-9_]+)=y$', line)
+              if m:
+                  want.append(m.group(1))
+                  continue
+              # String/hex options must be verified too. A promptless string such
+              # as DEFAULT_TCP_CONG is derived from a Kconfig choice, so assigning
+              # it in defconfig is silently discarded. Checking only '=y' hid that
+              # bug (BBR was requested but CUBIC was actually the default).
+              ms = re.match(r'^CONFIG_([A-Z0-9_]+)=(".*"|[0-9]+|0x[0-9a-fA-F]+)$', line)
+              if ms:
+                  want_str[ms.group(1)] = ms.group(2)
+                  continue
+              # Explicitly-disabled options must be asserted too. Kconfig can
+              # re-enable a symbol via 'default y' or a 'select', so requesting
+              # =n is only meaningful if it is verified in the final .config.
+              mn = re.match(r'^CONFIG_([A-Z0-9_]+)=n$', line)
+              if mn:
+                  want_off.append(mn.group(1))
+          have = dict(re.findall(r'^CONFIG_([A-Z0-9_]+)=(.*)$', open('out/.config').read(), re.M))
+          # KSU_SUSFS* are knowingly inactive on KernelSU-Next legacy; report, don't fail.
+          inactive = [s for s in want if s.startswith('KSU_SUSFS')]
+          missing = [s for s in want if s not in inactive and have.get(s) != 'y']
+          print(f"checked {len(want)} requested symbols")
+          if inactive:
+              print("NOTE: SUSFS is NOT active on KernelSU-Next legacy; these requested "
+                    "symbols are dropped by Kconfig and are not claimed as working: "
+                    + ", ".join(inactive))
+          if missing:
+              for s in missing:
+                  print(f"::error title=Config not applied::CONFIG_{s} (got {have.get(s,'absent')})")
+              sys.exit(1)
+          bad_off = [s for s in want_off if have.get(s, 'n') not in ('n', 'absent')]
+          if want_off:
+              print(f"checked {len(want_off)} explicitly-disabled options")
+          if bad_off:
+              for s in bad_off:
+                  print(f"::error title=Option should be disabled::CONFIG_{s} wanted n got {have.get(s)}")
+              sys.exit(1)
+          bad_str = {s: (v, have.get(s, 'absent')) for s, v in want_str.items() if have.get(s) != v}
+          if want_str:
+              print(f"checked {len(want_str)} requested string/numeric options")
+          if bad_str:
+              for s, (w, g) in bad_str.items():
+                  print(f"::error title=Config value not applied::CONFIG_{s} wanted {w} got {g}")
+              sys.exit(1)
+          print("All requested non-SUSFS symbols are =y and string options match in the final .config")
+          PYEOF
+
+          echo "== symbol verification (proves code is really linked in) =="
+          for sym in path_umount ksu_handle_execveat ksu_handle_faccessat ksu_handle_vfs_read ksu_handle_sys_reboot wg_socket_init; do
+            if grep -qw "$sym" out/System.map; then
+              echo "  OK   $sym"
+            else
+              echo "::error title=Missing symbol::$sym not found in System.map"; exit 1
+            fi
+          done
+          echo "== new feature symbols =="
+          for sym in cake_enqueue fq_codel_enqueue nfs_init_sbi nft_chain_lookup devfreq_governor_list thermal_gov_power_allocator; do
+            grep -qw "$sym" out/System.map && echo "  OK   $sym" || echo "  note $sym not a standalone symbol (may be static/inlined)"
+          done
+
+          echo "== source revisions (reproducibility) =="
+          {
+            echo "build_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "compiler=$(cat /tmp/clang_version.txt 2>/dev/null || echo unknown)"
+            echo "clang_pin_requested=$CLANG_VERSION"
+            echo "gcc64_sha=$GCC64_SHA"
+            echo "gcc32_sha=$GCC32_SHA"
+            echo "build_seconds=$(cat /tmp/build_duration.txt 2>/dev/null || echo unknown)"
+            echo "compiler_warnings=$(cat /tmp/warn_count.txt 2>/dev/null || echo unknown)"
+            echo "kernel_repo=LineageOS/android_kernel_xiaomi_earth branch=lineage-24.0"
+            echo "kernel_sha=$(git rev-parse HEAD)"
+            echo "kernel_version=$(make -s kernelversion 2>/dev/null)"
+            echo "kernelsu_next_sha=$(git -C KernelSU-Next rev-parse HEAD 2>/dev/null)"
+            echo "workflow_sha=${GITHUB_SHA}"
+          } | tee ../REVISIONS.txt
+          cp out/.config ../build-config.txt
+          echo "Verification passed."
+
+      - name: Package AnyKernel3 (Redmi 12C / earth only)
+        run: |
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git AnyKernel3
+          sed -i 's/^device.name1=.*/device.name1=earth/' AnyKernel3/anykernel.sh
+          sed -i 's/^device.name2=.*/device.name2=aether/' AnyKernel3/anykernel.sh
+          sed -i 's/^device.name3=.*/device.name3=/' AnyKernel3/anykernel.sh
+          sed -i 's/^device.name4=.*/device.name4=/' AnyKernel3/anykernel.sh
+          sed -i 's/^device.name5=.*/device.name5=/' AnyKernel3/anykernel.sh
+          cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
+          if [ -f kernel/out/arch/arm64/boot/dtbo.img ]; then
+            cp kernel/out/arch/arm64/boot/dtbo.img AnyKernel3/
+          fi
+          cd AnyKernel3
+          zip -r9 ../Earth-Lineage24-KSUNext-EXPERIMENTAL-LTO.zip . -x ".git*" "README.md" "*placeholder"
+          cd ..
+          echo "== package contents =="
+          unzip -l Earth-Lineage24-KSUNext-EXPERIMENTAL-LTO.zip
+          unzip -l Earth-Lineage24-KSUNext-EXPERIMENTAL-LTO.zip | grep -q "Image.gz-dtb" || { echo "::error title=Package::kernel image missing from zip"; exit 1; }
+          unzip -p Earth-Lineage24-KSUNext-EXPERIMENTAL-LTO.zip anykernel.sh | grep -E "^device.name1=|^block=|^is_slot_device=" || true
+
+      - name: Validate artifacts and compute checksums
+        run: |
+          set -e
+          ZIP="Earth-Lineage24-KSUNext-EXPERIMENTAL-LTO.zip"
+          test -s "$ZIP" || { echo "::error title=Artifact::ZIP missing or empty"; exit 1; }
+          # Integrity: a truncated/corrupt zip must never be published.
+          unzip -t "$ZIP" >/dev/null || { echo "::error title=Artifact::ZIP failed integrity test"; exit 1; }
+          unzip -l "$ZIP" | grep -q "Image.gz-dtb" || { echo "::error title=Artifact::kernel image absent from ZIP"; exit 1; }
+          unzip -p "$ZIP" anykernel.sh | grep -qE "^device.name1=earth" || { echo "::error title=Artifact::device lock missing"; exit 1; }
+          test -s REVISIONS.txt || { echo "::error title=Artifact::REVISIONS.txt missing"; exit 1; }
+          test -s build-config.txt || { echo "::error title=Artifact::build-config.txt missing"; exit 1; }
+          sha256sum "$ZIP" REVISIONS.txt build-config.txt > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          {
+            echo ""
+            echo "### Artifact validation"
+            echo ""
+            echo "| Check | Result |"
+            echo "|---|---|"
+            echo "| ZIP integrity (unzip -t) | pass |"
+            echo "| Image present in ZIP | pass |"
+            echo "| Device lock earth | pass |"
+            echo "| ZIP bytes | $(stat -c%s "$ZIP") |"
+            echo ""
+            echo '```'
+            cat SHA256SUMS.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: Earth-Lineage24-KSUNext-EXPERIMENTAL-LTO
+          path: |
+            Earth-Lineage24-KSUNext-EXPERIMENTAL-LTO.zip
+            REVISIONS.txt
+            build-config.txt
+            SHA256SUMS.txt
+
+      - name: Publish flashable ZIP to Releases (public download)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="earth-experimental-${{ github.run_number }}"
+          cat > /tmp/notes.md <<'NOTES'
+          **EXPERIMENTAL — NOT FOR DAILY USE.** Redmi 12C / POCO C55 (earth), Linux 4.19.325.
+
+          This build exists to test **LTO_CLANG + ThinLTO + CFI_CLANG + SHADOW_CALL_STACK**
+          in isolation. It contains everything the stable build has, plus those options.
+          **SUSFS is NOT included** — deliberately, so an LTO failure cannot be confused
+          with a SUSFS failure.
+
+          * `CFI_PERMISSIVE=y`: CFI violations WARN instead of panic, so a vendor-driver
+            violation is diagnosable rather than a bootloop.
+          * Built with an older pinned clang, better matched to this 4.19 LTO backport.
+          * LTO on a 4.19 MediaTek vendor tree frequently fails. A failed build here is
+            an expected outcome and is recorded, not hidden.
+
+          **Do not flash this unless you are explicitly testing LTO and have a Boot backup.**
+          These options are excluded from stable and SUSFS releases until boot AND runtime
+          testing succeed.
+
+          `REVISIONS.txt` records the exact compiler, pinned toolchain SHAs, build duration
+          and warning count. `SHA256SUMS.txt` verifies download integrity.
+
+          NOTES
+          gh release create "$TAG" \
+            --repo "${{ github.repository }}" \
+            --title "earth 4.19.325 EXPERIMENTAL LTO+CFI+SCS - build ${{ github.run_number }}" \
+            --notes-file /tmp/notes.md \
+            --prerelease \
+            Earth-Lineage24-KSUNext-EXPERIMENTAL-LTO.zip REVISIONS.txt build-config.txt SHA256SUMS.txt
+          echo "Release: https://github.com/${{ github.repository }}/releases/tag/$TAG"

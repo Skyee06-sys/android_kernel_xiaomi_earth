@@ -8,10 +8,10 @@ kconfiglib, not hand-written.
 |---|---|
 | Base | `arch/arm64/configs/earth_defconfig` @ `lineage-24.0` |
 | Kernel | Linux **4.19.325**, arm64 |
-| Requested options (stable) | **147** |
-| Changed vs stock | **142** |
+| Requested options (stable) | **163** |
+| Changed vs stock | **158** |
 | Already stock (request was a no-op) | **5** |
-| Requested options (SUSFS build) | **163** (147 + 16 SUSFS) |
+| Requested options (SUSFS build) | **179** (163 + 16 SUSFS) |
 
 ---
 
@@ -113,8 +113,8 @@ CI then asserts, in the **final** `out/.config`:
 
 | Option | Stock defconfig | Built | Requested |
 |---|---|---|---|
-| `KSU` | — | **absent** | y |
-| `KSU_MANUAL_HOOK` | — | **absent** | y |
+| `KSU` | — | **y** | y |
+| `KSU_MANUAL_HOOK` | — | **y** | y |
 | `KSU_KPROBES_HOOK` | — | **absent** | n |
 | `SECURITYFS` | y | **y** | y |
 | `TCP_CONG_ADVANCED` | — | **y** | y |
@@ -260,6 +260,78 @@ CI then asserts, in the **final** `out/.config`:
 | `TASK_IO_ACCOUNTING` | — | **y** | y |
 | `SCHEDSTATS` | y | **y** | y |
 | `DEFAULT_BBR` | — | **y** | y |
+| `UCLAMP_BUCKETS_COUNT` | — | **20** | 20 |
+| `SLAB_FREELIST_RANDOM` | — | **y** | y |
+| `SLAB_FREELIST_HARDENED` | — | **y** | y |
+| `FORTIFY_SOURCE` | — | **y** | y |
+| `BPF_UNPRIV_DEFAULT_OFF` | — | **y** | y |
+| `HARDENED_USERCOPY_FALLBACK` | — | **n** | n |
+| `IDLE_PAGE_TRACKING` | — | **y** | y |
+| `BLK_CGROUP_IOLATENCY` | — | **y** | y |
+| `PACKET_DIAG` | — | **y** | y |
+| `INET_UDP_DIAG` | — | **y** | y |
+| `INET_RAW_DIAG` | — | **y** | y |
+| `CGROUP_NET_PRIO` | — | **y** | y |
+| `TLS` | — | **y** | y |
+| `BPF_STREAM_PARSER` | — | **y** | y |
+| `BLK_DEV_THROTTLING` | — | **y** | y |
+| `NF_CONNTRACK_TIMEOUT` | — | **y** | y |
+
+---
+
+## ✅ Phase C1 + C2 — now applied (before → after)
+
+| Option | Before | After | Side effect observed |
+|---|---|---|---|
+| `UCLAMP_BUCKETS_COUNT` | `5` | **`20`** | none |
+| `SLAB_FREELIST_RANDOM` | `n` | **`y`** | none |
+| `SLAB_FREELIST_HARDENED` | `n` | **`y`** | none |
+| `FORTIFY_SOURCE` | `n` | **`y`** | `PROFILE_ALL_BRANCHES` choice entry disappears |
+| `BPF_UNPRIV_DEFAULT_OFF` | `n` | **`y`** | none |
+| `HARDENED_USERCOPY_FALLBACK` | **`y`** | **`n`** | none — makes existing hardening strict |
+| `IDLE_PAGE_TRACKING` | `n` | **`y`** | none |
+| `BLK_CGROUP_IOLATENCY` | `n` | **`y`** | none |
+| `PACKET_DIAG` | `n` | **`y`** | none |
+| `INET_UDP_DIAG` | `n` | **`y`** | none |
+| `INET_RAW_DIAG` | `n` | **`y`** | none |
+| `CGROUP_NET_PRIO` | `n` | **`y`** | none |
+| `TLS` | `n` | **`y`** | selects `STREAM_PARSER=y`; `TLS_DEVICE=n` |
+| `BPF_STREAM_PARSER` | `n` | **`y`** | selects `STREAM_PARSER=y` |
+| `BLK_DEV_THROTTLING` | `n` | **`y`** | `BLK_DEV_THROTTLING_LOW=n` |
+| `NF_CONNTRACK_TIMEOUT` | `n` | **`y`** | `NF_CT_NETLINK_TIMEOUT=n` |
+
+**Aggregate regression review:** 5 unrequested changes, all listed above and all
+predicted. **Zero** previously-enabled options were lost. Guards confirmed unchanged:
+`DEBUG_FS=n`, `NFS_FS=n`, `NFSD=n`, `NFT_COMPAT=y`, `THERMAL_WRITABLE_TRIPS=y`,
+`ZRAM_MEMORY_TRACKING=n`, `SCHED_AUTOGROUP=n`, `TRANSPARENT_HUGEPAGE=n`,
+`MODULE_SIG=n`, and **`LTO_CLANG=n` in stable/SUSFS** (experimental isolation holds).
+
+### Verifier now asserts `=n` too
+
+Requesting `=n` is only meaningful if checked: Kconfig can re-enable a symbol via
+`default y` or a `select`. The verifier now validates explicitly-disabled options
+in the final `.config` alongside `=y` and string/numeric values.
+
+Dry run: **159 `=y` + 2 `=n` + 2 string/numeric**, exit 0.
+
+---
+
+## 🧪 Phase C3 — experimental workflow only
+
+`.github/workflows/experimental.yml` adds, on top of everything above:
+
+| Option | Value | Availability evidence |
+|---|---|---|
+| `LTO_CLANG` | `y` | `arch/arm64/Kconfig:61`; `Makefile:864-877` |
+| `THINLTO` | `y` | `arch/arm64/Kconfig:62`; `arch/Kconfig:514` |
+| `CFI_CLANG` | `y` | `arch/Kconfig:560`; `Makefile:894-904` |
+| `CFI_PERMISSIVE` | `y` | violations WARN, not panic — diagnosable |
+| `SHADOW_CALL_STACK` | `y` | `arch/arm64/Kconfig:63,988` (clang ≥7); `asm/scs.h` |
+
+Prerequisites verified: `KALLSYMS=y`, `KASAN` unset, `HAVE_C_RECORDMCOUNT=y`,
+`FTRACE_MCOUNT_RECORD` unset. These resolve `n` under gcc and require clang+lld,
+which is why they are built with a pinned **clang-16** rather than the stable
+build's clang-18.
 
 ---
 

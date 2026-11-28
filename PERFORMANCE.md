@@ -85,10 +85,12 @@ Each line is `frequency (kHz)  time (10ms units)`. Take two readings around an
 idle period and subtract: that shows whether the CPU sits at high frequencies
 while doing nothing. **This is evidence; a battery percentage is not.**
 
-### Uclamp granularity — approved but not yet applied
-`UCLAMP_BUCKETS_COUNT` is currently **5** (20% buckets). The permitted range is
-**5–20** (`init/Kconfig:726`). Phase C1 raises it to **20** (5% buckets) for finer
-clamp aggregation. Expected to make boost/placement more precise — **unmeasured**.
+### Uclamp granularity — raised in Phase C1
+`UCLAMP_BUCKETS_COUNT` was **5** (20% buckets), the bottom of its permitted
+**5–20** range (`init/Kconfig:726`). It is now **20** (5% buckets) for finer clamp
+aggregation. Expected to make boost and task placement more precise on the
+A75/A55 split — **still unmeasured**. Compare `time_in_state` and PSI before/after
+if you want evidence.
 
 ---
 
@@ -120,9 +122,12 @@ GPU overclocking is not implemented.
 | **Kyber / MQ deadline** | Alternative latency-oriented policies | Compare under your own workload |
 | **F2FS** (stock) | Flash-friendly layout | — |
 
-**Not enabled:** `BLK_WBT` (writeback throttling) and `F2FS_FS_COMPRESSION`. Both
-exist in the tree but change behaviour, so they are **experimental-only** and must
-be measured independently before reaching stable.
+**Enabled in Phase C1/C2:** `BLK_CGROUP_IOLATENCY` (per-cgroup latency targets) and
+`BLK_DEV_THROTTLING` (per-cgroup bandwidth caps). Neither acts until configured.
+
+**Still not enabled in stable:** `BLK_WBT` (writeback throttling) and
+`F2FS_FS_COMPRESSION`. Both exist in the tree but change behaviour, so they remain
+experimental candidates and must be measured independently.
 
 ---
 

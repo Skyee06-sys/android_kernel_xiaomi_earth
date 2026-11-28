@@ -65,13 +65,16 @@ The module exposes these toggles regardless of kernel support. **Leave them off.
 
 ---
 
-## 🟡 Open — build/tooling
+## 🟢 Addressed in Phase B — build/tooling
+
+> These are implemented in the workflows; confirm in the next build's job summary
+> and `REVISIONS.txt` before treating them as closed.
 
 ### KI-007 · Toolchain versions are not pinned
 
 | | |
 |---|---|
-| **Status** | **Open → Phase B** |
+| **Status** | **Addressed in Phase B** — verify in build output |
 | **Evidence** | `apt-get install clang` (unversioned); GCC binutils cloned with `-b master` from `android.googlesource.com` |
 | **Impact** | Builds are not reproducible over time; an upstream clang bump can break the build without any repo change |
 | **Plan** | Pin clang and the toolchain commit in Phase B |
@@ -80,7 +83,7 @@ The module exposes these toggles regardless of kernel support. **Leave them off.
 
 | | |
 |---|---|
-| **Status** | **Open → Phase B** |
+| **Status** | **Addressed in Phase B** — ccache + actions/cache |
 | **Impact** | Every build is a full ~17-minute compile |
 | **Plan** | ccache + `actions/cache` |
 
@@ -88,7 +91,7 @@ The module exposes these toggles regardless of kernel support. **Leave them off.
 
 | | |
 |---|---|
-| **Status** | **Open → Phase B** |
+| **Status** | **Addressed in Phase B** — timeout 60 min + concurrency |
 | **Impact** | A hung job can consume the 6-hour default; superseded pushes waste runners |
 | **Plan** | `timeout-minutes` + `concurrency` with cancel-in-progress |
 
@@ -96,7 +99,7 @@ The module exposes these toggles regardless of kernel support. **Leave them off.
 
 | | |
 |---|---|
-| **Status** | **Open → Phase B** |
+| **Status** | **Addressed in Phase B** — warnings counted and reported |
 | **Evidence** | `KCFLAGS="-Wno-error"` |
 | **Why it exists** | The MTK vendor tree emits many warnings; `-Werror` would make the build impossible |
 | **Problem** | Warning counts are never reported, so a genuine new warning is invisible |
@@ -106,7 +109,7 @@ The module exposes these toggles regardless of kernel support. **Leave them off.
 
 | | |
 |---|---|
-| **Status** | **Open → Phase B** |
+| **Status** | **Addressed in Phase B** — SHA256SUMS.txt published |
 | **Impact** | Download integrity cannot be verified |
 | **Plan** | Publish SHA256 alongside each release asset |
 
