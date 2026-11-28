@@ -380,7 +380,7 @@ jobs:
           PYEOF
 
           echo "== symbol verification (proves code is really linked in) =="
-          for sym in path_umount ksu_handle_execveat ksu_handle_faccessat ksu_handle_vfs_read ksu_handle_sys_reboot wg_socket_init susfs_init susfs_is_current_ksu_domain susfs_is_current_zygote_domain ksu_try_umount susfs_try_umount_all; do
+          for sym in path_umount ksu_handle_execveat ksu_handle_faccessat ksu_handle_vfs_read ksu_handle_sys_reboot wg_socket_init susfs_init susfs_is_current_ksu_domain susfs_is_current_zygote_domain ksu_try_umount susfs_try_umount; do
             if grep -qw "$sym" out/System.map; then
               echo "  OK   $sym"
             else
