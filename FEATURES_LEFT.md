@@ -1,134 +1,141 @@
-# What's Left to Add — earth (Redmi 12C / MT6768, Linux 4.19.325)
+# 🗺️ Roadmap — what is left to do
 
-Every entry below was checked against the real LineageOS `lineage-24.0` earth source and evaluated with **kconfiglib** against `earth_defconfig`, so "available" and "currently off" are verified facts, not guesses.
+Rewritten from verified source facts. This document previously listed the
+**Tier A** audit as pending work; that work is **complete and shipped**. The
+original findings are preserved below as a historical record, with their current
+status marked.
 
----
-
-## First: things you might think are missing, but are ALREADY on
-
-I checked these because they're common "must-have" requests. No work needed:
-
-| Feature | Effective value | Note |
-|---|---|---|
-| **PSI** (pressure stall info) | `y` | Already enabled; `PSI_DEFAULT_DISABLED=n`, so `/proc/pressure/*` is live |
-| **UCLAMP_TASK** + **UCLAMP_TASK_GROUP** | `y` | Utilization clamping already active (schedutil is default) |
-| `CGROUPS`, `CGROUP_SCHED` | `y` | |
-| **All 6 CPU governors** | `y` | performance, powersave, userspace, ondemand, conservative, schedutil — **nothing left here** |
-| `TCP_CONG_BIC` | `y` | already on |
-| `NET_SCH_HTB` | `y` | already on |
-| `IOSCHED_CFQ`, `IOSCHED_NOOP` | `y` | already on |
-| `FUSE_FS`, `OVERLAY_FS` | `y` | already on |
-| exFAT, NTFS-RW, EROFS, F2FS (+encryption) | `y` | stock |
-| ZRAM + ZRAM_WRITEBACK | `y` | stock + our LZ4/ZSTD |
+>  **Authoritative feature status:** [FEATURES.md](FEATURES.md)
+> 📋 **Change history:** [CHANGELOG.md](CHANGELOG.md)
+> ❌ **Decline reasons:** [changelog/DISABLED.md](changelog/DISABLED.md)
 
 ---
 
-## TIER A — Available in-tree, just a config flip (low risk)
+## ✅ Completed since the original audit
 
-These exist in the source and are currently `n`. No patching required.
-
-### A1. DDR / devfreq governors — **highest value in Tier A** ⭐
-Your SoC is `MACH_MT6768=y`, which builds `drivers/devfreq/helio-dvfsrc-v2/` — the MediaTek **DDR frequency** devfreq driver. But **no devfreq governors are enabled**, so that hardware has no governor choice.
-
-| Config | Currently | Gives you |
+| Original Tier A item | Status now | Shipped in |
 |---|---|---|
-| `DEVFREQ_GOV_SIMPLE_ONDEMAND` | `n` | load-based DDR scaling (the normal default) |
-| `DEVFREQ_GOV_PERFORMANCE` | `n` | pin DDR at max — gaming latency |
-| `DEVFREQ_GOV_POWERSAVE` | `n` | pin DDR at min — battery |
-| `DEVFREQ_GOV_USERSPACE` | `n` | manual DDR freq via sysfs |
-| `DEVFREQ_GOV_PASSIVE` | `n` | follow parent device |
+| DDR / devfreq governors (5) | **Enabled** | stable-15 onward |
+| Thermal governors (5) + writable trips + statistics | **Enabled** | stable-15 onward |
+| Qdiscs: CAKE, FQ_CODEL, PIE, CoDel, NETEM + shaping | **Enabled** | stable-15 onward |
+| TCP: DCTCP, HSTCP, HYBLA, NV, CDG | **Enabled** | stable-15 onward |
+| nftables + IPv6 NAT + TEE | **Enabled** | stable-15 onward |
+| SquashFS, XFS, Btrfs, HFS+, UDF, JFS | **Enabled** | stable-15 onward |
+| `KERNEL_LZ4` | **Enabled** | stable-15 onward |
+| SUSFS port | **Enabled (experimental build)** | susfs-2 onward, v1.5.5 |
+| Traffic-control classifiers + actions | **Enabled** | stable-22 / susfs-5 |
+| TPROXY, per-app firewall, nft extras | **Enabled** | stable-22 / susfs-5 |
+| Monitoring: `CPU_FREQ_TIMES`, TASKSTATS, … | **Enabled** | stable-22 / susfs-5 |
+| BBR actually the default | **Fixed** | stable-22 / susfs-5 |
 
-### A2. Thermal governors
-Only `THERMAL_DEFAULT_GOV_BACKWARD_COMPATIBLE` is set. All the real governors are off.
+### Historical note preserved
+The original audit correctly observed that **no devfreq governors were enabled**
+despite `MACH_MT6768=y` building the MediaTek DDR driver, and that only
+`THERMAL_DEFAULT_GOV_BACKWARD_COMPATIBLE` was set. Both were fixed. It also
+correctly listed PSI, UCLAMP, all CPU governors, `TCP_CONG_BIC`, `NET_SCH_HTB`,
+CFQ/NOOP, FUSE/OVERLAY, exFAT/NTFS-RW/EROFS/F2FS and ZRAM+WRITEBACK as **already
+stock** — that finding still holds and those were never re-added as features.
 
-| Config | Currently | Gives you |
+---
+
+## 🟢 Phase C1 — approved, not yet implemented
+
+All validated with kconfiglib. **Zero unrequested side effects** unless noted.
+
+| Option | Current → Target | Purpose |
 |---|---|---|
-| `THERMAL_GOV_STEP_WISE` | `n` | standard stepwise throttling |
-| `THERMAL_GOV_FAIR_SHARE` | `n` | weighted fair cooling |
-| `THERMAL_GOV_BANG_BANG` | `n` | simple on/off fan-style |
-| `THERMAL_GOV_USER_SPACE` | `n` | userspace thermal control |
-| `THERMAL_GOV_POWER_ALLOCATOR` | `n` | PID power-budget allocator (best sustained perf) |
-| `THERMAL_WRITABLE_TRIPS` | not set | lets you edit trip points from sysfs |
-| `DEVFREQ_THERMAL` | `n` | DDR cooling device |
+| `UCLAMP_BUCKETS_COUNT` | **5 → 20** | Clamp granularity 20% → 5%; range is 5–20 (`init/Kconfig:726`) |
+| `SLAB_FREELIST_RANDOM` | n → y | Randomise slab allocation order |
+| `SLAB_FREELIST_HARDENED` | n → y | Validate freelist pointers |
+| `FORTIFY_SOURCE` | n → y | Compile/runtime bounds checks *(benign: `PROFILE_ALL_BRANCHES` choice entry disappears)* |
+| `BPF_UNPRIV_DEFAULT_OFF` | n → y | Disable unprivileged BPF by default |
+| `HARDENED_USERCOPY_FALLBACK` | **y → n** | Make existing usercopy hardening strict instead of `WARN()` (`security/Kconfig:174-180`) |
+| `IDLE_PAGE_TRACKING` | n → y | Idle-page analysis (`mm/page_idle.c`) |
+| `BLK_CGROUP_IOLATENCY` | n → y | Per-cgroup I/O latency targets |
+| `PACKET_DIAG`, `INET_UDP_DIAG`, `INET_RAW_DIAG` | n → y | Proper `ss` socket introspection |
+| `CGROUP_NET_PRIO` | n → y | Per-cgroup network priority |
 
-### A3. Queue disciplines (bufferbloat / latency)
-Only `FQ` and `HTB` are on.
+**Gate:** compile + config assertion + artifact validation, then on-device boot
+testing. Docs updated in the same commit.
 
-| Config | Currently | Why |
+---
+
+## 🟡 Phase C2 — individual review required
+
+| Option | Verified side effect | Open question |
 |---|---|---|
-| `NET_SCH_CAKE` | `n` | best-in-class all-in-one AQM/shaper ⭐ |
-| `NET_SCH_FQ_CODEL` | `n` | the standard bufferbloat fix ⭐ |
-| `NET_SCH_PIE` | `n` | PIE AQM |
-| `NET_SCH_CODEL` | `n` | base CoDel |
-| `NET_SCH_NETEM` | `n` | emulate delay/loss (testing) |
-| also available | `n` | HFSC, PRIO, SFQ, TBF, MULTIQ, RED, SFB, GRED, DRR, MQPRIO, QFQ, CHOKE, HHF, CBS, ETF, INGRESS |
+| `TLS` (kTLS) | selects `STREAM_PARSER=y` | Any app on this device that actually uses kTLS? |
+| `BPF_STREAM_PARSER` | selects `STREAM_PARSER=y` | Worth it for sockmap-based proxies? |
+| `BLK_DEV_THROTTLING` | adds `BLK_DEV_THROTTLING_LOW=n` | Needed alongside `BLK_CGROUP_IOLATENCY`? |
+| `NF_CONNTRACK_TIMEOUT` | adds `NF_CT_NETLINK_TIMEOUT=n` | Useful for mobile-data flow churn? |
+| `F2FS_FS_COMPRESSION` | auto-selects LZ4 + LZO + ZSTD | Needs userspace/mount support; does **not** compress existing data |
 
-### A4. Remaining TCP congestion controls
-5 left (we already added 8 + BBR).
+Each will be presented with evidence, before/after values and a regression review
+before implementation.
 
-| Config | Currently |
+---
+
+## 🟠 Phase C3 — experimental only
+
+Never in a stable release until boot **and** runtime testing succeed.
+
+| Option | Evidence it is available | Main risk |
+|---|---|---|
+| `LTO_CLANG` + `CFI_CLANG` | `arch/arm64/Kconfig:61` selects `ARCH_SUPPORTS_LTO_CLANG`; `arch/Kconfig:530,560`. Needs clang+lld (CI has both) | MTK vendor drivers frequently break under LTO. Start with `CFI_PERMISSIVE=y` |
+| `SHADOW_CALL_STACK` | `arch/arm64/Kconfig:63`; `arch/arm64/include/asm/scs.h` present | Needs clang SCS support; per-thread memory cost |
+| `BLK_WBT` | `block/blk-wbt.c`; auto-selects `BLK_WBT_MQ=y` | Changes I/O behaviour |
+| `FUNCTION_TRACER` | pulls `FUNCTION_GRAPH_TRACER`, `FTRACE_MCOUNT_RECORD` | `-pg` on every function → size + overhead |
+| `TRANSPARENT_HUGEPAGE` | defaults to `THP_ALWAYS=y` when enabled | Must force `MADVISE`; latency risk on Android |
+| `CPU_THERMAL` | `drivers/thermal/cpu_cooling.c` present | May register a cooling device competing with `mtk_thermal.c` |
+| `PM_AUTOSLEEP` | config-clean | Android manages sleep via its own wakeup sources |
+
+> ℹ️ Isolation is implemented as a **separate manual-only workflow publishing a
+> pre-release**, because this session tracks one fixed branch. The guarantee is
+> the same: experimental code cannot enter a stable build.
+
+---
+
+## 🔵 Phase B — CI improvements (approved)
+
+| Item | Tracking |
 |---|---|
-| `TCP_CONG_DCTCP` | `n` (datacenter-style, low queue) |
-| `TCP_CONG_HSTCP` | `n` (HighSpeed — the real name; `TCP_CONG_HIGHSPEED` doesn't exist) |
-| `TCP_CONG_HYBLA` | `n` |
-| `TCP_CONG_NV` | `n` |
-| `TCP_CONG_CDG` | `n` |
-
-### A5. Modern firewall / NAT
-| Config | Currently | Gives you |
-|---|---|---|
-| `NF_TABLES` (+ `NFT_*`) | `n` | nftables backend — **zero** nft support right now |
-| `IP6_NF_NAT` | `n` | IPv6 NAT / tethering |
-| `NETFILTER_XT_TARGET_TEE` | `n` | packet cloning |
-
-### A6. Filesystems
-| Config | Currently | Use |
-|---|---|---|
-| `NFS_FS` / `NFSD` | `n` | NFS client / server |
-| `SQUASHFS` | `n` | read-only compressed images (modules, ROMs) |
-| `XFS_FS` | `n` | XFS on OTG drives |
-| `BTRFS_FS` | `n` | Btrfs (heavier) |
-| `HFSPLUS_FS` | `n` | Mac-formatted drives |
-| `UDF_FS` | `n` | DVD/UDF media |
-| `JFS_FS`, `9P_FS` | `n` | niche |
-
-### A7. Misc
-| Config | Currently | Effect |
-|---|---|---|
-| `KERNEL_LZ4` | `n` (GZIP default) | much faster boot decompression, slightly bigger image |
-| `ZRAM_MEMORY_TRACKING` | `n` | per-page zram stats for tuning |
-| `LTO_CLANG` | `n` | link-time optimisation — possible perf gain, **risky** on 4.19 MTK; test separately |
+| Pin clang version | [KI-007](KNOWN_ISSUES.md) |
+| Pin GCC toolchain commit (currently `-b master`) | KI-007 |
+| ccache + `actions/cache` | KI-008 |
+| `timeout-minutes` + `concurrency` | KI-009 |
+| Report compiler-warning counts | KI-010 |
+| SHA256 checksums for release assets | KI-011 |
+| Build duration + `$GITHUB_STEP_SUMMARY` | new |
 
 ---
 
-## TIER B — Not in the tree; needs a real port or driver patch
+##  Held pending verification
 
-These are **absent from the source**, so they're genuine projects, not config flips.
-
-| Feature | Status in tree | Effort / notes |
-|---|---|---|
-| **SUSFS (root hiding)** ⭐⭐ | patch exists but targets *original* KernelSU layout | **The biggest gap.** Needs porting the SUSFS Kconfig + `susfs.o` build gate + `susfs_is_current_ksu_domain()` / `_zygote_domain()` into KernelSU-Next `legacy`. Currently inactive. |
-| **MGLRU** (Multi-Gen LRU) | absent — no `lru_gen` in `mm/vmscan.c` | Big reclaim/latency win; 4.19 ports exist but are invasive |
-| **DAMON** | absent — no `mm/damon/` | memory access monitoring; large backport |
-| **simple_lmk** | absent | alternative low-memory killer |
-| **BBR2 / BBRplus** | absent (BBR v1 only) | needs importing newer BBR |
-| **NTFS3** | absent (legacy `ntfs` only) | modern NTFS driver, 5.15+ |
-| **sdfat** | absent | faster exFAT; you already have `exfat` |
-| **Custom CPU governors** (alucard, darkness, impulse, blu_active, lionheart…) | absent — only the 6 standard ones exist | would need importing each governor |
-| **KCAL / display colour control** | needs MTK display driver patch | device-specific |
-| **Sound control / headphone gain** | needs MTK audio driver patch | device-specific |
-| **Vibration intensity control** | needs vibrator driver patch | device-specific |
-| **Charging control / bypass charging (ACC)** | needs MTK charger driver patch | device-specific, battery-risk if wrong |
-| **GPU OC / UC** | Mali Valhall r32p1 DVFS tables | risky — stability/heat |
-| **WALT scheduler** | Qualcomm-only | **not applicable** to your MediaTek SoC |
-| **SUS_SU** | unsupported on non-GKI | deliberately `n` |
+| Option | Why held |
+|---|---|
+| `SECURITY_YAMA` | **Your decision:** keep disabled until KernelSU-Next, debugger and root-tool compatibility is verified. `security/yama/yama_lsm.c` is present and it resolves cleanly with no side effects. |
 
 ---
 
-## My recommendation, in order
+## ❌ Closed — will not be pursued
 
-1. **SUSFS port** (Tier B) — the only *headline* feature that's advertised but not working. Highest user-visible value.
-2. **Tier A bundle: DDR devfreq governors + thermal governors + CAKE/FQ_CODEL + nftables + IPv6 NAT.** All verified-available config flips, one CI run to prove them, real benefits to gaming latency, thermals and networking.
-3. **Optional extras:** remaining TCP algos, NFS/SquashFS/HFS+/UDF, `KERNEL_LZ4`, `ZRAM_MEMORY_TRACKING`.
-4. **Only if you want to experiment:** MGLRU backport, then `LTO_CLANG` — each in its own build so a failure is easy to attribute.
-5. **Skip:** WALT (wrong vendor), SUS_SU (non-GKI), GPU OC and charger patches unless you accept bricking/heat risk.
+| Item | Reason |
+|---|---|
+| `ZSMALLOC_STAT` | **`select DEBUG_FS`** (`mm/Kconfig:617`) → forces debugfs plus 14 further debug symbols |
+| `MODULE_SIG` | Auto-generates a signing key per build → breaks reproducibility |
+| `STRICT_DEVMEM` / `IO_STRICT_DEVMEM` | `DEVMEM=n` already — the interface does not exist, which is stronger |
+| `INIT_ON_FREE_DEFAULT_ON` | Cost on every free; zero-on-alloc already enabled |
+| NFS / NFSD | Tree defect: `fs/nfs/client.c:625` uses absent `rpc_clnt.cl_softerr` |
+| MGLRU, DAMON, BBR2/BBRplus, NTFS3, sdfat | Absent from this 4.19 tree; invasive backports |
+| WALT | Qualcomm-only |
+| simple_lmk | Conflicts with Android `lmkd` |
+| `SCHED_AUTOGROUP` | TTY-oriented; can hurt Android responsiveness |
+| `ZRAM_DEF_COMP_*`, `NET_SCH_DEFAULT`, `CPU_IDLE_GOV_TEO` | Symbols do not exist in 4.19 |
+| KCAL / sound / vibration / charging control, GPU OC | No verified hardware interface, or not required |
+| Game controllers, USB serial drivers | Verified available and low-risk, but **not requested** |
+
+---
+
+## 🔗 Related
+
+[FEATURES.md](FEATURES.md) · [KERNEL_CONFIG.md](KERNEL_CONFIG.md) · [KNOWN_ISSUES.md](KNOWN_ISSUES.md) · [CONTRIBUTING.md](CONTRIBUTING.md) · [CHANGELOG.md](CHANGELOG.md)
