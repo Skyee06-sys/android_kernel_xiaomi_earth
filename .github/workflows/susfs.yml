@@ -124,7 +124,7 @@ jobs:
           rm -rf /tmp/susfs4ksu
 
           # 4. Defconfig (KSU-Next, SUSFS, Gaming, Network, Memory & Battery)
-          cat << 'EOF' >> arch/arm64/configs/earth_defconfig
+          cat << 'EOF' > /tmp/requested-config.txt
           # Root & Hiding
           CONFIG_KSU=y
           CONFIG_KSU_MANUAL_HOOK=y
@@ -302,6 +302,9 @@ jobs:
           #  NTFS3 / sdfat - not present in this 4.19 tree (would need a backport);
           #    the in-tree NTFS (read/write) and exFAT drivers already cover this.
           EOF
+          # Record exactly what we request so verification checks our options,
+          # not unrelated stock defconfig entries that Kconfig may drop.
+          cat /tmp/requested-config.txt >> arch/arm64/configs/earth_defconfig
 
       - name: Setup GCC Binutils
         run: |
@@ -355,7 +358,7 @@ jobs:
           python3 - << 'PYEOF'
           import re, sys
           want = []
-          src = open('arch/arm64/configs/earth_defconfig').read()
+          src = open('/tmp/requested-config.txt').read()
           for line in src.splitlines():
               m = re.match(r'^CONFIG_([A-Z0-9_]+)=y$', line.strip())
               if m:
