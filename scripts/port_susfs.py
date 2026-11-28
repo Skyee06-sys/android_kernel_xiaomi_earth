@@ -233,6 +233,76 @@ def patch_kernel(susfs: pathlib.Path):
     print("  cleaned .rej/.orig")
 
 
+# ---------------------------------------------------------------- API reconciliation
+
+
+def reconcile_api():
+    """
+    Some susfs4ksu kernel-4.19 checkouts pair a newer kernel patch with an older
+    fs/susfs.c. Concretely: the patch calls susfs_try_umount_all(uid) while
+    v1.5.5's susfs.c defines susfs_try_umount(target_uid) with identical
+    semantics (walk LH_TRY_UMOUNT_PATH in reverse, ksu_try_umount each entry).
+    Rather than inventing an alias, point the call site at the API that exists.
+    """
+    print("[api] reconciling SUSFS API names against the shipped susfs.c")
+    src = read("fs/susfs.c")
+    ns_path = "fs/namespace.c"
+    ns = read(ns_path)
+    if "susfs_try_umount_all" in ns and "void susfs_try_umount_all(" not in src:
+        if "void susfs_try_umount(" not in src:
+            raise SystemExit("API ERROR: susfs.c defines neither susfs_try_umount_all "
+                             "nor susfs_try_umount")
+        ns = ns.replace("extern void susfs_try_umount_all(uid_t uid);",
+                        "extern void susfs_try_umount(uid_t target_uid);")
+        ns = ns.replace("susfs_try_umount_all(", "susfs_try_umount(")
+        write(ns_path, ns)
+        print("  + call site uses susfs_try_umount() (the API this susfs.c provides)")
+    else:
+        print("  = API names already consistent")
+
+
+def check_symbols():
+    """
+    Fail locally on any susfs_/ksu_ function that is called but never defined.
+    This is exactly the class of bug that otherwise only shows up as an
+    'undefined symbol' at the very end of a 15-minute CI link.
+    """
+    print("[symbols] checking every SUSFS/KSU call resolves to a definition")
+    pat = r"\b(susfs_[a-z0-9_]+|ksu_try_umount|ksu_susfs_[a-z0-9_]+)\s*\("
+    called = {}
+    targets = (list(pathlib.Path("fs").rglob("*.c"))
+               + list(pathlib.Path("kernel").rglob("*.c"))
+               + list(pathlib.Path("include/linux").glob("susfs*.h")))
+    for p in targets:
+        if p.name == "susfs.c":
+            continue
+        for m in re.finditer(pat, p.read_text(errors="ignore")):
+            called.setdefault(m.group(1), set()).add(str(p))
+
+    defs = set()
+    defpat = (r"^(?:static\s+)?(?:inline\s+)?(?:void|int|bool|u32|long|struct\s+\w+\s*\*?)\s+"
+              r"(susfs_[a-z0-9_]+|ksu_try_umount|ksu_susfs_[a-z0-9_]+)\s*\(")
+    for root in ("fs", "kernel", "include", str(KSU), "security"):
+        rp = pathlib.Path(root)
+        if not rp.exists():
+            continue
+        for p in rp.rglob("*"):
+            if p.suffix not in (".c", ".h"):
+                continue
+            t = p.read_text(errors="ignore")
+            for m in re.finditer(defpat, t, re.M):
+                defs.add(m.group(1))
+            for m in re.finditer(r"^#define\s+(susfs_[a-z0-9_]+)\(", t, re.M):
+                defs.add(m.group(1))
+
+    missing = {k: sorted(v) for k, v in called.items() if k not in defs}
+    if missing:
+        for k, v in sorted(missing.items()):
+            print(f"  FAIL {k} called from {v[:3]} but never defined")
+        raise SystemExit(f"unresolved SUSFS/KSU symbols: {sorted(missing)}")
+    print(f"  OK   all {len(called)} referenced SUSFS/KSU functions are defined")
+
+
 # ---------------------------------------------------------------- KernelSU side
 
 SUSFS_KCONFIG = """menu "KernelSU - SUSFS"
@@ -488,7 +558,9 @@ def main():
         raise SystemExit(f"{KSU} missing - clone KernelSU-Next legacy first")
     patch_kernel(susfs)
     patch_kernelsu()
+    reconcile_api()
     verify()
+    check_symbols()
 
 
 if __name__ == "__main__":
