@@ -119,6 +119,22 @@ The module exposes these toggles regardless of kernel support. **Leave them off.
 
 ---
 
+### KI-012 · In-tree `skmsg.c` use-before-declaration (vendor defect)
+
+| | |
+|---|---|
+| **Status** | 🟢 **Patched by CI** — `scripts/fix_skmsg_order.py`, pending a green build |
+| **Severity** | Build-breaking, but only when `CONFIG_BPF_STREAM_PARSER=y` |
+| **Evidence** | `net/core/skmsg.c`: call at **L791**, definition at **L812**, no forward declaration |
+| **Compiler output** | `error: implicit declaration of function 'sk_psock_from_strp' [-Werror,-Wimplicit-function-declaration]`, then `incompatible integer to pointer conversion`, then `static declaration … follows non-static declaration` |
+| **Why it was invisible** | The whole block is inside `#if IS_ENABLED(CONFIG_BPF_STREAM_PARSER)`, which the stock `earth_defconfig` leaves off — the code is never compiled |
+| **Not our bug** | This is a mis-ordered backport in the LineageOS tree. Upstream **v5.4** has the definition at **L681**, *before* its callers (L741/L766). The author added a prototype for `sk_psock_done_strp` (L574) but forgot this one. |
+| **Fix** | Move the definition above its first caller — upstream ordering restored. **Pure code motion**, body byte-identical to upstream. |
+| **Regression review** | Line multiset, byte length and brace balance unchanged; same `#if` region; text outside the region unchanged; with the option off the preprocessed output is **identical**. Idempotent; tampered input fails loudly. |
+| **Affected builds** | All three (stable #24, SUSFS #7, experimental #2 failed identically) |
+
+---
+
 ## 🟢 By design — not bugs
 
 | Item | Reason |

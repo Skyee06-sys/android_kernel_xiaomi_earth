@@ -49,6 +49,55 @@ was made and **what it should improve**. Newest first.
 
 ---
 
+## [Source fix] — 2026-11-27 · `skmsg.c` declaration order (C2 prerequisite)
+
+🐛 **A real defect in the LineageOS tree, exposed by Phase C2.** Stable
+[#24](https://github.com/Skyee06-sys/android_kernel_xiaomi_earth/actions/runs/46176922148),
+SUSFS [#7](https://github.com/Skyee06-sys/android_kernel_xiaomi_earth/actions/runs/46176930512) and
+experimental [#2](https://github.com/Skyee06-sys/android_kernel_xiaomi_earth/actions/runs/46176932686)
+all compiled for ~20 minutes, then failed identically on `net/core/skmsg.o`.
+
+| | Before | After |
+|---|---|---|
+| `sk_psock_from_strp()` definition | **L812** — *after* its callers | **L789** — before them |
+| First call | L791 (implicit declaration) | L799 (properly declared) |
+| Order vs upstream v5.4 | inverted | **matches upstream** (def L681 < calls L743/L766) |
+| Function body | — | **byte-identical**, not one token changed |
+
+**Root cause.** `net/core/skmsg.c` calls `sk_psock_from_strp()` 21 lines before
+defining it, with no forward declaration. Clang rejects that outright:
+`implicit declaration of function`, then `incompatible integer to pointer
+conversion`, then `static declaration … follows non-static declaration`. Plain
+`-Wno-error` does not undo clang's *default-error* diagnostics.
+
+**Why it was invisible until now.** The block is inside
+`#if IS_ENABLED(CONFIG_BPF_STREAM_PARSER)`, which the stock defconfig leaves
+off — the code was **never compiled**. Turning it on in C2 tested it for the
+first time. **The config did not create the bug; it revealed one.**
+
+✨ **Added** `scripts/fix_skmsg_order.py` and a dedicated CI step in all three
+workflows. It asserts exact anchors, is idempotent, and fails loudly on drift.
+
+📊 **Regression review (asserted by the script):** line multiset, byte length and
+brace balance unchanged; definition stays in the same `#if` region; text outside
+the region unchanged; with `BPF_STREAM_PARSER=n` the preprocessed output is
+**identical**; definition precedes every call afterwards; second run is a no-op;
+a tampered body exits 1.
+
+📊 **Whole-class sweep before rebuilding:** every translation unit C1/C2 newly
+enables was scanned for use-before-declaration. **Exactly one** real instance
+existed — this one. Four apparent hits were checked by hand and are genuine
+prototypes or unused files.
+
+⚠️ Experimental #2 **still did not test LTO** — it died in `net/core`, before the
+LTO link stage. That question remains open.
+
+📚 Docs in the same commit: `KERNEL_DETAILS.md` (new §4b local-patch registry with
+the regression table), `KNOWN_ISSUES.md` (**KI-012**), `BUILD_GUIDE.md` (patch
+scripts + manual invocation), `changelog/BUILD-LEDGER.md` (post-mortem 8).
+
+---
+
 ## [CI fix] — 2026-11-27 · cache key, action runtime, warning counter
 
 🐛 **All three Phase B/C workflows failed at `Restore ccache` before compiling.**

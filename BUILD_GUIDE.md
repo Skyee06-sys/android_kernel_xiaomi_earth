@@ -172,6 +172,26 @@ sign-in and expire after 90 days, which is why releases are used for distributio
 | **Checksums** | `SHA256SUMS.txt` published as a release asset |
 | **Job summary** | `$GITHUB_STEP_SUMMARY` tables for metrics and validation |
 
+### Local source patches
+
+CI applies source patches through asserting, idempotent scripts — never with a
+blind `patch` call:
+
+| Script | Applied to | Purpose |
+|---|---|---|
+| `scripts/port_susfs.py` | SUSFS build only | Port SUSFS v1.5.5 onto earth + KernelSU-Next legacy |
+| `scripts/fix_skmsg_order.py` | **all three builds** | Restore upstream declaration order in `net/core/skmsg.c`, required by `CONFIG_BPF_STREAM_PARSER=y` |
+
+Run the skmsg fix by hand against a checkout:
+
+```bash
+python3 scripts/fix_skmsg_order.py --kernel-dir kernel --check   # report only
+python3 scripts/fix_skmsg_order.py --kernel-dir kernel           # apply + print diff
+```
+
+It is idempotent, asserts pure code motion, and exits non-zero if the tree does
+not match the expected upstream body.
+
 ### The third workflow
 
 | | Experimental |

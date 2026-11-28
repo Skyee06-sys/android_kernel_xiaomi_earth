@@ -37,14 +37,14 @@ Downloads are **public release assets — no GitHub sign-in**. Each release ship
 | SoC | MT6768 / Helio G85 | `MACH_MT6768=y`, `MTK_PLATFORM="mt6768"` |
 | CPU topology | 2× Cortex-A75 + 6× Cortex-A55 | `mt6768.dts`: A75 `capacity=1024 dpc=275`; A55 `495 / 85` |
 | GPU | Mali **Valhall r32p1** | `MTK_GPU_VERSION="mali valhall r32p1"` |
-| Compiler | **clang + ld.lld** | `CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm …` |
-| Binutils | aarch64 / arm GCC **4.9** prebuilts | `toolchain/gcc64`, `toolchain/gcc32` |
+| Compiler | **pinned clang-18** (stable/SUSFS), **clang-16** (experimental) + `ld.lld-N` | `CLANG_VERSION` env; actual version in `REVISIONS.txt` |
+| Binutils | aarch64 / arm GCC **4.9** prebuilts, **pinned SHAs** | LineageOS mirrors @ `5e030ea` / `111258a`, detached checkout |
 | Kernel image | `Image.gz-dtb` (DTB appended) | `CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE=y`, names `mediatek/mt6768` |
 | Packaging | AnyKernel3, locked to `earth` / `aether` | `anykernel.sh` device names |
 | Preemption / timer | `PREEMPT=y`, `HZ=250` | resolved config |
 
-⚠️ Toolchain versions are **not yet pinned** — tracked as
-[KI-007](KNOWN_ISSUES.md), scheduled for Phase B.
+Toolchain pinning is implemented (Phase B) but **not yet confirmed by a green
+build** — see [KI-007](KNOWN_ISSUES.md).
 
 ---
 
@@ -111,6 +111,33 @@ KernelSU-Next `legacy` ships **no** SUSFS support, and the upstream
 
 **Runtime hiding is unverified.** The kernel is only half of SUSFS; the userspace
 module supplies the hide-list. See [SUSFS_USAGE_GUIDE.md](SUSFS_USAGE_GUIDE.md).
+
+---
+
+## 4b. Local source patches applied by CI
+
+Every patch is applied by a script that asserts its anchors, is idempotent, and
+fails loudly if upstream drifts. No patch is applied silently.
+
+| Patch | Script / step | Why it is needed | Evidence |
+|---|---|---|---|
+| `path_umount()` backport | Clone & Patch step | Linux 5.9 API absent from 4.19; KernelSU-Next needs it or the kernel does not link | symbol asserted in `System.map` |
+| SUSFS v1.5.5 port | `scripts/port_susfs.py` | Upstream patches reject on earth (`fs_context` backport, KABI layout) and target original KernelSU, not Next legacy | **SUSFS build only** |
+| **`skmsg.c` declaration order** | **`scripts/fix_skmsg_order.py`** | **In-tree defect:** `sk_psock_from_strp()` is called at L791 but defined at L812, with no prototype. Clang errors out. Hidden by stock config because the block is inside `#if IS_ENABLED(CONFIG_BPF_STREAM_PARSER)`; **Phase C2 exposes it.** | Upstream `torvalds/linux` **v5.4** defines it at **L681**, before callers at L741/L766. Body is **byte-identical**. Fix is pure code motion. |
+
+**Regression proof for the `skmsg.c` patch** (asserted by the script, not assumed):
+
+| Assertion | Result |
+|---|---|
+| Line multiset unchanged | ✅ pure code motion |
+| Byte length unchanged | ✅ |
+| Brace balance unchanged | ✅ |
+| Definition stays inside the same `#if` region | ✅ |
+| Text outside the region unchanged | ✅ |
+| With `BPF_STREAM_PARSER=n`, preprocessed output identical | ✅ verified independently |
+| Definition now precedes every call | ✅ L789 < L799, L822 |
+| Idempotent (second run is a no-op) | ✅ |
+| Tampered function body → loud failure | ✅ exit 1 |
 
 ---
 

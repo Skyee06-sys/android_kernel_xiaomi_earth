@@ -427,6 +427,23 @@ jobs:
           # not unrelated stock defconfig entries that Kconfig may drop.
           cat /tmp/requested-config.txt >> arch/arm64/configs/earth_defconfig
 
+      - name: Fix in-tree skmsg.c declaration order (C2 prerequisite)
+        run: |
+          # Phase C2 sets CONFIG_BPF_STREAM_PARSER=y, which exposes a latent
+          # defect in the LineageOS 4.19.325 tree: net/core/skmsg.c CALLS
+          # sk_psock_from_strp() at L791 but DEFINES it at L812, with no forward
+          # declaration. GCC tolerated it; clang rejects it as a hard error.
+          # The stock defconfig hides the bug because the whole block lives
+          # inside #if IS_ENABLED(CONFIG_BPF_STREAM_PARSER).
+          #
+          # The script moves the definition above its callers, which is where
+          # upstream puts it (torvalds/linux v5.4: L681 before L741/L766). The
+          # body is byte-identical to upstream. Pure code motion: it asserts an
+          # unchanged line multiset, unchanged brace balance, unchanged text
+          # outside the #ifdef, and that the definition now precedes every call.
+          # Idempotent, and it fails loudly if upstream drifts.
+          python3 "$GITHUB_WORKSPACE/scripts/fix_skmsg_order.py" --kernel-dir kernel --ci
+
       - name: Setup GCC Binutils
         run: |
           # Phase B: pinned to fixed commits on GitHub mirrors instead of a

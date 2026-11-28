@@ -25,7 +25,8 @@ Runs GitHub still retains:
 
 | Run | ID | Result | Source | What it was |
 |:---:|---|:---:|---|---|
-| **#23** | 46176374866 | ❌ | `6e5501a` | Phase B/C1/C2 — **failed at `Restore ccache`**: cache key contained commas. Never reached the compiler. |
+| **#24** | 46176922148 | ❌ | `9c1428b` | Cache fixed — reached the compiler (~20 min). **Real in-tree defect:** `net/core/skmsg.c` calls `sk_psock_from_strp()` before defining it. Exposed by C2's `BPF_STREAM_PARSER=y`. |
+| #23 | 46176374866 | ❌ | `6e5501a` | Phase B/C1/C2 — **failed at `Restore ccache`**: cache key contained commas. Never reached the compiler. |
 | #22 | 46137709296 | ✅ | `2fc7655` | Traffic control + proxy/firewall + monitoring; **BBR default fixed** |
 | #20 | 46128068561 | ✅ | `4d6c7ee` | Post-cleanup rebuild; `tools/` added, doc/tool trigger filter |
 | #19 | 46126184460 | ✅ | `db5b925` | SUSFS usage guide + version recording |
@@ -58,7 +59,8 @@ Manual-only. Never runs on push.
 
 | Run | ID | Result | Source | What it was |
 |:---:|---|:---:|---|---|
-| **#6** | 46176386174 | ❌ | `6e5501a` | Phase B/C1/C2 — same comma-in-cache-key failure at `Restore ccache`. |
+| **#7** | 46176930512 | ❌ | `9c1428b` | Same `skmsg.c` compile error as stable #24. |
+| #6 | 46176386174 | ❌ | `6e5501a` | Phase B/C1/C2 — same comma-in-cache-key failure at `Restore ccache`. |
 | #5 | 46137717612 | ✅ | `2fc7655` | Same features as stable-22 + SUSFS v1.5.5 |
 | #4 | 46123981627 | ✅ | `050caac` | `REVISIONS.txt` now records `susfs_version` |
 | #3 | 46122026185 | ✅ | `f4a33c3` | First SUSFS build published to Releases |
@@ -75,11 +77,12 @@ can never reach a stable release by accident.
 
 | Run | ID | Result | Source | What it was |
 |:---:|---|:---:|---|---|
-| **#1** | 46176388608 | ❌ | `6e5501a` | First dispatch — failed at `Restore ccache` (comma in key), **before** any LTO code was compiled. LTO itself is still untested. |
+| **#2** | 46176932686 | ❌ | `9c1428b` | Same `skmsg.c` compile error. **LTO still untested** — the build died in `net/core`, before the LTO link stage. |
+| #1 | 46176388608 | ❌ | `6e5501a` | First dispatch — failed at `Restore ccache` (comma in key), **before** any LTO code was compiled. LTO itself is still untested. |
 
-> ⚠️ Run #1 says nothing about whether LTO works on this tree. The job died in
-> the cache step. The LTO question remains open until a run actually reaches
-> the compile step.
+> ⚠️ **Neither run #1 nor #2 says anything about whether LTO works on this
+> tree.** #1 died in the cache step; #2 died compiling `net/core/skmsg.c`, long
+> before the LTO link stage. The LTO question remains open.
 
 ---
 
@@ -183,6 +186,90 @@ display name: renaming a workflow no longer invalidates its cache.
 re-dispatching, every `run:` block in all three workflows was checked with
 `bash -n` and every embedded Python verifier with `compile()` — 24 shell blocks,
 0 failures. Static checks are free; a failed 17-minute runner is not.
+
+---
+
+### 8. `sk_psock_from_strp()` used before it is declared — a real vendor bug
+
+**Symptom.** Stable #24, SUSFS #7 and experimental #2 all compiled for ~20
+minutes and then failed on the same translation unit:
+
+```
+../net/core/skmsg.c:791:27: error: implicit declaration of function
+    'sk_psock_from_strp' [-Werror,-Wimplicit-function-declaration]
+../net/core/skmsg.c:791:19: error: incompatible integer to pointer conversion
+    initializing 'struct sk_psock *' with an expression of type 'int'
+../net/core/skmsg.c:812:25: error: static declaration of 'sk_psock_from_strp'
+    follows non-static declaration
+make[3]: *** [../scripts/Makefile.build:333: net/core/skmsg.o] Error 1
+```
+
+**Real root cause.** The LineageOS 4.19.325 tree carries a mis-ordered backport:
+
+| | Line |
+|---|---|
+| `sk_psock_strp_read()` — the caller | 789 |
+| `sk_psock_from_strp(strp)` — the call | **791** |
+| `sk_psock_from_strp()` — the definition | **812** |
+
+There is no forward declaration. GCC accepted this as an implicit declaration
+plus an int→pointer warning; clang treats it as a hard error, and plain
+`-Wno-error` does not undo clang's *default-error* diagnostics.
+
+**Why it never showed up before.** The entire block lives inside
+`#if IS_ENABLED(CONFIG_BPF_STREAM_PARSER)`. The stock `earth_defconfig` leaves
+that off, so the code is **never compiled**. Phase C2 turning it on is what
+exposed a bug that was already there. The configuration did not create the bug.
+
+**Evidence that this is the vendor's bug, not ours.** Upstream
+`torvalds/linux` **v5.4** `net/core/skmsg.c`:
+
+| | Line |
+|---|---|
+| `sk_psock_from_strp()` definition | **681** |
+| `sk_psock_strp_read()` | 741 |
+| calls | 743, 766 |
+
+Upstream defines it **first**. The function body in the earth tree is
+**byte-identical** to upstream v5.4. Tellingly, the backport author *did* add a
+forward declaration for `sk_psock_done_strp` (L574) — they just missed this one.
+
+**Fix.** `scripts/fix_skmsg_order.py` moves the definition above its first
+caller, restoring upstream ordering. Applied as its own visible CI step in all
+three workflows.
+
+**Regression review — asserted, not assumed:**
+
+| Check | Result |
+|---|---|
+| Line multiset unchanged (pure code motion) | ✅ |
+| Byte length unchanged | ✅ |
+| Brace balance unchanged | ✅ |
+| Definition stays in the same `#if` region | ✅ |
+| Text outside the region unchanged | ✅ |
+| `BPF_STREAM_PARSER=n` preprocessed output identical | ✅ independently verified |
+| Definition precedes every call afterwards | ✅ L789 < L799, L822 |
+| Idempotent | ✅ second run is a no-op |
+| Tampered body → loud failure | ✅ exit 1 |
+
+**Before rebuilding, the whole class was swept.** A use-before-declaration scan
+(with comment/string/preprocessor stripping and a paren matcher to tell calls
+from prototypes) across every translation unit C1/C2 newly enables —
+`skmsg.c`, `tls_main.c`, `tls_sw.c`, `blk-throttle.c`, `blk-iolatency.c`,
+`nf_conntrack_timeout.c`, `page_idle.c`, `udp_diag.c`, `raw_diag.c`,
+`packet/diag.c`, `netprio_cgroup.c`, `slub.c`, `string.c`, `usercopy.c`,
+`slab_common.c` — found **exactly one** real instance: this one.
+
+False positives were checked by hand rather than dismissed:
+`sk_psock_done_strp` has a real prototype at L574; `sysfs_slab_add` and
+`__fanout_unlink` have prototypes next to preprocessor lines;
+`packet_sock_flag` is a `static inline` in `net/packet/internal.h`, which
+`diag.c` includes; `raw_get_hashinfo` is local to `raw_diag.c`;
+`tls_device.c` is not built at all because `TLS_DEVICE=n`.
+
+**Lesson.** "It compiled before" is not evidence of correctness — it can just
+mean the code was preprocessed away. Enabling a subsystem is a *test* of that
+subsystem, and a latent vendor bug is a legitimate, expected outcome.
 
 ---
 
