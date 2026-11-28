@@ -107,7 +107,7 @@ Real on this SoC: `MACH_MT6768=y` builds `helio-dvfsrc-v2`. **No frequencies are
 **B. Thermal** — `STEP_WISE`, `FAIR_SHARE`, `BANG_BANG`, `USER_SPACE`, `POWER_ALLOCATOR`, `THERMAL_WRITABLE_TRIPS`, `DEVFREQ_THERMAL`, `THERMAL_STATISTICS`.
 **Hardware protection preserved:** `MTK_LEGACY_THERMAL` and the stock default governor stay on; no cooling device, trip point or throttle was removed. We only add governor *choices*.
 
-**C. Networking** — `CAKE`, `FQ_CODEL`, `PIE`, `CODEL`, `NETEM`, `HFSC`, `PRIO`, `SFQ`, `TBF`, `INGRESS`, `MQPRIO`; TCP `DCTCP`, `HSTCP`, `HYBLA`, `NV`, `CDG`. Existing `FQ`, `HTB`, `BIC` kept; **BBR remains the default**.
+**C. Networking** — `CAKE`, `FQ_CODEL`, `PIE`, `CODEL`, `NETEM`, `HFSC`, `PRIO`, `SFQ`, `TBF`, `INGRESS`, `MQPRIO`; TCP `DCTCP`, `HSTCP`, `HYBLA`, `NV`, `CDG`. Existing `FQ`, `HTB`, `BIC` kept. **BBR is the default only from this revision onward** — see the fix below.
 
 **D. Firewall** — `NF_TABLES` + `NF_TABLES_INET`, `NFT_COMPAT`, `NFT_NAT/MASQ/REDIR/CT/COUNTER/LOG/LIMIT/REJECT`, `IP6_NF_NAT`, `IP6_NF_TARGET_MASQUERADE`, `NF_NAT_IPV6`, `NETFILTER_XT_TARGET_TEE`.
 `NFT_COMPAT` is deliberate: it keeps Android's existing iptables/netd rules working alongside nftables.
@@ -117,6 +117,71 @@ Real on this SoC: `MACH_MT6768=y` builds `helio-dvfsrc-v2`. **No frequencies are
 **F. Misc** — `KERNEL_LZ4` (faster boot decompression). PSI / UCLAMP / CPU governors were already on and were left alone.
 
 ---
+
+### 3b. Added later: traffic-control completion, proxy/firewall, monitoring
+
+Requested after the first releases and validated the same way (kconfiglib against
+the real `lineage-24.0` tree, **30/30 symbols resolve to `=y`**, no regressions in
+the existing 116). Present in **both** the stable and SUSFS builds.
+
+**Traffic control — completing the qdisc work.** The qdiscs added in Tier A could
+be attached but not *fed*: without classifiers/actions, `tc` cannot sort traffic
+into classes or police it. Added `NET_CLS`, `NET_CLS_ACT`, `NET_CLS_U32`,
+`NET_CLS_FLOWER`, `NET_CLS_CGROUP`, `NET_ACT_POLICE`, `NET_ACT_MIRRED`.
+
+**Transparent proxy / per-app firewall / nft extras.** `NFT_TPROXY`,
+`NETFILTER_XT_TARGET_TPROXY`, `NETFILTER_XT_MATCH_SOCKET` (Clash / v2ray /
+SagerNet transparent interception); `NETFILTER_XT_MATCH_OWNER` (uid-based per-app
+rules, AFWall+ style); `NETFILTER_XT_MATCH_QUOTA`, `NETFILTER_XT_MATCH_TIME`
+(data caps, schedules); `NETFILTER_XT_TARGET_NOTRACK` (conntrack bypass);
+`NFT_FIB_IPV4`, `NFT_FIB_IPV6`, `NFT_FIB_INET`, `NFT_FIB`, `NFT_SOCKET`,
+`NFT_OSF`, `NETFILTER_INGRESS`, `NF_FLOW_TABLE`, `NF_FLOW_TABLE_INET`,
+`NFT_FLOW_OFFLOAD`. `NFT_COMPAT` stays on, so Android netd's iptables rules keep
+working.
+
+Two dependency corrections were needed and are why validation matters:
+`NFT_FIB` is a **promptless** symbol selected by `NFT_FIB_IPV4/IPV6`, and
+`NFT_FLOW_OFFLOAD` requires `NF_FLOW_TABLE`, which itself requires
+`NETFILTER_INGRESS`. Requesting the leaf symbols alone left all three at `n`.
+
+**Monitoring.** `CPU_FREQ_TIMES` (frequency time-in-state → real battery
+analysis), `TASKSTATS`, `TASK_DELAY_ACCT`, `TASK_XACCT`, `TASK_IO_ACCOUNTING`
+(per-task CPU/IO delay accounting), `SCHEDSTATS` (`/proc/schedstat`).
+`SCHEDSTATS` needs `DEBUG_KERNEL` + `PROC_FS`, **not** `DEBUG_FS`, so `DEBUG_FS`
+remains off. Overhead is small and these exist to make tuning evidence-based.
+
+### 3c. Bug found and fixed: BBR was never the default
+
+`CONFIG_DEFAULT_TCP_CONG` is a **promptless string** whose value is derived from
+the "Default TCP congestion control" Kconfig *choice*:
+
+```
+config DEFAULT_TCP_CONG
+        string
+        default "cubic" if DEFAULT_CUBIC
+        default "bbr"   if DEFAULT_BBR
+```
+
+Assigning `CONFIG_DEFAULT_TCP_CONG="bbr"` in defconfig is therefore **silently
+discarded**, and the choice default (`DEFAULT_CUBIC`) won. Every release before
+this revision actually defaulted to **cubic**, despite requesting bbr.
+
+The verifier missed it because it only matched `^CONFIG_...=y$` and ignored
+string values entirely.
+
+**Fix:** select `CONFIG_DEFAULT_BBR=y`. Validated: `DEFAULT_BBR=y`,
+`DEFAULT_CUBIC=n`, `DEFAULT_TCP_CONG="bbr"`.
+
+**Verifier hardened:** it now also checks requested string/numeric options and
+fails on mismatch. Negative-tested — restoring `"cubic"` produces
+`::error title=Config value not applied::CONFIG_DEFAULT_TCP_CONG wanted "bbr" got "cubic"`
+and exit 1, so this class of bug cannot hide again.
+
+**Still deliberately not added:** `SCHED_AUTOGROUP` (desktop/TTY-oriented, can
+group all Android apps together and hurt responsiveness), `F2FS_CHECK_FS`
+(debug overhead), `BLK_WBT` and `F2FS_FS_COMPRESSION` (behaviour-changing —
+belong in a separate experimental build, not the stable one), game-controller
+drivers (evaluated and available, but not requested).
 
 ## 4. Step 4 — Tier B: evaluated individually, each with a decision
 
@@ -151,7 +216,7 @@ The goal was real behaviour, not benchmark scores:
 - **Gaming:** `performance` DDR/CPU governors are *available* when you want them, but **nothing is pinned to maximum by default**. schedutil stays the default CPU governor.
 - **Thermals:** `power_allocator` gives a PID power-budget approach for sustained load rather than harsh step throttling. All hardware protections remain.
 - **Multitasking / memory:** ZRAM (LZ4/ZSTD) + zswap/z3fold + KSM were already present and are kept; PSI and uclamp were already active.
-- **Network latency:** BBR + FQ default, with CAKE/FQ_CODEL available to fight bufferbloat.
+- **Network latency:** BBR + FQ default (BBR default was broken before this revision and is now fixed), with CAKE/FQ_CODEL available to fight bufferbloat.
 - **Battery:** `NO_HZ_IDLE`, `HZ_250`, schedutil, DDR `powersave`/`passive` options; no forced maximum frequencies anywhere.
 
 ---
