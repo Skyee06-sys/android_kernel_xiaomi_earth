@@ -257,7 +257,7 @@ jobs:
           zip -r9 ../Earth-Lineage24-KSUNext-SUSFS.zip . -x ".git*" "README.md" "*placeholder"
 
       - name: Upload Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: Earth-Lineage24-KSUNext-SUSFS
           path: Earth-Lineage24-KSUNext-SUSFS.zip
