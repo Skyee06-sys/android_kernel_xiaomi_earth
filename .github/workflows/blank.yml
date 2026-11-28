@@ -32,6 +32,9 @@ jobs:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 2G
       CCACHE_COMPILERCHECK: content
+      # Cache keys may not contain commas, and github.workflow (the display
+      # name) does. Use a fixed comma-free slug per workflow instead.
+      CACHE_SLUG: 'stable'
     steps:
       - name: Install Dependencies
         run: |
@@ -416,13 +419,13 @@ jobs:
           test -x toolchain/gcc64/bin/aarch64-linux-android-ld || { echo "::error title=Toolchain::aarch64 binutils missing"; exit 1; }
 
       - name: Restore ccache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ env.CCACHE_DIR }}
-          key: ccache-${{ github.workflow }}-${{ env.CLANG_VERSION }}-${{ github.sha }}
+          key: ccache-${{ env.CACHE_SLUG }}-clang${{ env.CLANG_VERSION }}-${{ github.sha }}
           restore-keys: |
-            ccache-${{ github.workflow }}-${{ env.CLANG_VERSION }}-
-            ccache-${{ github.workflow }}-
+            ccache-${{ env.CACHE_SLUG }}-clang${{ env.CLANG_VERSION }}-
+            ccache-${{ env.CACHE_SLUG }}-
 
       - name: Compile Kernel
         run: |
@@ -482,8 +485,10 @@ jobs:
           # ---- Phase B: build metrics, warning accounting, ccache stats ----
           BUILD_END=$(date +%s); BUILD_START=$(cat /tmp/build_start.txt 2>/dev/null || echo "$BUILD_END")
           DURATION=$((BUILD_END - BUILD_START))
-          WARN_COUNT=$(grep -c 'warning:' /tmp/compile.log 2>/dev/null || echo 0)
-          ERR_COUNT=$(grep -c 'error:' /tmp/compile.log 2>/dev/null || echo 0)
+          WARN_COUNT=$(grep -c 'warning:' /tmp/compile.log 2>/dev/null || true)
+          WARN_COUNT=${WARN_COUNT:-0}
+          ERR_COUNT=$(grep -c 'error:' /tmp/compile.log 2>/dev/null || true)
+          ERR_COUNT=${ERR_COUNT:-0}
           echo "$DURATION" > /tmp/build_duration.txt
           echo "$WARN_COUNT" > /tmp/warn_count.txt
           echo "== build duration: ${DURATION}s =="
@@ -585,7 +590,12 @@ jobs:
             fi
           done
           echo "== new feature symbols =="
-          for sym in cake_enqueue fq_codel_enqueue nfs_init_sbi nft_chain_lookup devfreq_governor_list thermal_gov_power_allocator; do
+          # NFS is deliberately disabled on this tree (KI-002), so it is not probed.
+          # Phase C1/C2 symbols verified against the 4.19.325 source:
+          #   lib/string.c:1127, net/core/skmsg.c:483, block/blk-throttle.c:2396,
+          #   block/blk-iolatency.c:727, net/netfilter/nf_conntrack_timeout.c:57
+          for sym in cake_enqueue fq_codel_enqueue nft_chain_lookup devfreq_governor_list thermal_gov_power_allocator \
+                     fortify_panic sk_psock_init blk_throtl_init blk_iolatency_init nf_conntrack_timeout_init; do
             grep -qw "$sym" out/System.map && echo "  OK   $sym" || echo "  note $sym not a standalone symbol (may be static/inlined)"
           done
 
@@ -678,6 +688,20 @@ jobs:
           * KernelSU-Next (legacy) with manual hooks. **SUSFS is not included in this build.**
           * Tier A: DDR devfreq governors, thermal governors, CAKE/FQ_CODEL/PIE/CoDel,
             extra TCP congestion controls, nftables + IPv6 NAT, extra filesystems, KERNEL_LZ4.
+          * Phase C1 hardening: SLAB_FREELIST_RANDOM + SLAB_FREELIST_HARDENED, FORTIFY_SOURCE,
+            BPF_UNPRIV_DEFAULT_OFF, and HARDENED_USERCOPY_FALLBACK turned OFF (violations are
+            now fatal instead of a mere warning).
+          * Phase C1 tuning/diagnostics: uclamp buckets 5 -> 20 for finer EAS granularity,
+            IDLE_PAGE_TRACKING, BLK_CGROUP_IOLATENCY, PACKET_DIAG / INET_UDP_DIAG /
+            INET_RAW_DIAG, CGROUP_NET_PRIO.
+          * Phase C2: kTLS, BPF_STREAM_PARSER (sockmap), BLK_DEV_THROTTLING, NF_CONNTRACK_TIMEOUT.
+          * NOT included: LTO / CFI / Shadow Call Stack (separate experimental workflow only),
+            F2FS compression, SECURITY_YAMA (pending KernelSU-Next / root-tool verification).
+          * Built with a pinned clang and pinned GCC binutils; exact versions and source SHAs
+            are in REVISIONS.txt, together with build duration and warning count.
+          * Validated before publication: ZIP integrity, kernel image present, earth device lock.
+            SHA256SUMS.txt covers the ZIP, REVISIONS.txt and build-config.txt.
+          * No performance improvement is claimed: benefits are expected, not measured.
           * Verified: ARM64 image, every requested CONFIG, required symbols in System.map.
 
           Flash `Earth-Lineage24-KSUNext.zip` in TWRP/OrangeFox. Back up your boot partition first.
