@@ -1,20 +1,26 @@
-name: Build Earth-Only Kernel (LineageOS 24.0 + KSU-Next + SUSFS + Performance)
+name: Build earth Kernel (LineageOS 24.0 + KernelSU-Next, stable)
 
 on:
   workflow_dispatch:
   push:
     branches: [ main ]
+    # Documentation-only changes must not trigger a ~17 minute kernel rebuild
+    # (and must not publish a redundant release).
+    paths-ignore:
+      - '**.md'
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Install Dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves zip python3 cpio wget git clang lld llvm
 
-      - name: Clone & Patch Kernel (KSU-Next + SUSFS + Earth-Only Tweaks)
+      - name: Clone & Patch Kernel (KSU-Next + earth tweaks)
         run: |
           git clone --depth=1 -b lineage-24.0 https://github.com/LineageOS/android_kernel_xiaomi_earth.git kernel
           cd kernel
@@ -25,13 +31,21 @@ jobs:
           echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
           echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
 
-          # 2. SUSFS (kernel-4.19)
-          git clone --depth=1 -b kernel-4.19 https://gitlab.com/simonpunk/susfs4ksu.git /tmp/susfs4ksu
-          cp -r /tmp/susfs4ksu/kernel_patches/fs/* fs/
-          cp -r /tmp/susfs4ksu/kernel_patches/include/linux/* include/linux/
-          patch -p1 --forward < /tmp/susfs4ksu/kernel_patches/50_add_susfs_in_kernel-4.19.patch || true
-          rm -rf /tmp/susfs4ksu
-          find . -name "*.rej" -delete -o -name "*.orig" -delete
+          # 2. SUSFS is intentionally NOT integrated in this stable build.
+          # KernelSU-Next 'legacy' contains no SUSFS support at all (verified: zero
+          # susfs files and no KSU_SUSFS Kconfig symbols upstream), so copying the
+          # susfs4ksu sources here would only apply a partial, non-functional patch.
+          # The SUSFS port is developed and tested separately in susfs.yml so it can
+          # never destabilise this release. Root (KernelSU-Next) works normally.
+
+          # 2b. WireGuard: earth already ships WireGuard in-tree at
+          # drivers/net/wireguard (v1.0.0, wired via drivers/net/{Makefile,Kconfig}).
+          # It is the modern, already-backported driver (uses the kernel's
+          # ktime_get_coarse_boottime_ns / dst_cache_reset_now and selects its own
+          # crypto libs), so NO compat layer is needed. We only enable it via
+          # CONFIG_WIREGUARD=y in the defconfig below. Adding a second copy at
+          # net/wireguard would build the driver twice and duplicate every symbol
+          # at link time, so we deliberately do not clone wireguard-linux-compat.
 
           # 3. Apply KSU-Next manual hooks & SUSFS struct/namespace fixes
           python3 - << 'PY'
@@ -86,21 +100,32 @@ jobs:
           patch_file("fs/namespace.c",
               "#include <linux/fs_context.h>",
               "#include <linux/fs_context.h>\n#if defined(CONFIG_KSU_SUSFS_SUS_MOUNT) || defined(CONFIG_KSU_SUSFS_TRY_UMOUNT)\n#include <linux/susfs_def.h>\n#endif")
+
+          # Backport path_umount() for kernels < 5.9 (earth is 4.19).
+          # KernelSU-Next's feature/kernel_umount.c calls path_umount() whenever
+          # KSU_HAS_PATH_UMOUNT is set (its Kbuild greps fs/namespace.c for it).
+          # Without the definition the vmlinux link fails:
+          #   ld.lld: error: undefined symbol: path_umount
+          # This is the upstream 5.9 implementation, per KernelSU's non-GKI guide.
+          import re
+          with open("fs/namespace.c") as f:
+              _ns = f.read()
+          if re.search(r"^int path_umount\s*\(", _ns, re.M):
+              print("path_umount already defined, skipping backport")
+          else:
+              patch_file("fs/namespace.c",
+                  "/*\n * Now umount can handle mount points as well as block devices.",
+                  "static int can_umount(const struct path *path, int flags)\n{\n\tstruct mount *mnt = real_mount(path->mnt);\n\n\tif (flags & ~(MNT_FORCE | MNT_DETACH | MNT_EXPIRE | UMOUNT_NOFOLLOW))\n\t\treturn -EINVAL;\n\tif (!may_mount())\n\t\treturn -EPERM;\n\tif (path->dentry != path->mnt->mnt_root)\n\t\treturn -EINVAL;\n\tif (!check_mnt(mnt))\n\t\treturn -EINVAL;\n\tif (mnt->mnt.mnt_flags & MNT_LOCKED) /* Check optimistically */\n\t\treturn -EINVAL;\n\tif (flags & MNT_FORCE && !capable(CAP_SYS_ADMIN))\n\t\treturn -EPERM;\n\treturn 0;\n}\n\n// caller is responsible for flags being sane\nint path_umount(struct path *path, int flags)\n{\n\tstruct mount *mnt = real_mount(path->mnt);\n\tint ret;\n\n\tret = can_umount(path, flags);\n\tif (!ret)\n\t\tret = do_umount(mnt, flags);\n\n\t/* we mustn't call path_put() as that would clear mnt_expiry_mark */\n\tdput(path->dentry);\n\tmntput_no_expire(mnt);\n\treturn ret;\n}\n\n/*\n * Now umount can handle mount points as well as block devices.")
+              print("path_umount backported into fs/namespace.c")
           PY
 
           # 4. Defconfig (KSU-Next, SUSFS, Gaming, Network, Memory & Battery)
-          cat << 'EOF' >> arch/arm64/configs/earth_defconfig
+          cat << 'EOF' > /tmp/requested-config.txt
           # Root & Hiding
           CONFIG_KSU=y
           CONFIG_KSU_MANUAL_HOOK=y
-          CONFIG_KSU_KPROBE_HOOKS=n
-          CONFIG_KSU_SUSFS=y
-          CONFIG_KSU_SUSFS_SUS_PATH=y
-          CONFIG_KSU_SUSFS_SUS_MOUNT=y
-          CONFIG_KSU_SUSFS_TRY_UMOUNT=y
-          CONFIG_KSU_SUSFS_SPOOF_UNAME=y
-          CONFIG_KSU_SUSFS_ENABLE_LOG=y
-          CONFIG_KSU_SUSFS_SUS_SU=n
+          CONFIG_KSU_KPROBES_HOOK=n
+          # SUSFS: not claimed as supported. See susfs.yml for the isolated port.
           CONFIG_SECURITYFS=y
 
           # Network & Gaming Latency
@@ -121,7 +146,144 @@ jobs:
           CONFIG_NO_HZ_IDLE=y
           CONFIG_HZ_250=y
           CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y
+
+          # --- Added features: network, governors, I/O, memory, filesystems ---
+          # WireGuard VPN (already in-tree at drivers/net/wireguard; just enable it)
+          CONFIG_WIREGUARD=y
+          # Tethering bypass (TTL/HL targets), ipset, extra TCP congestion controls
+          CONFIG_IP_NF_TARGET_TTL=y
+          CONFIG_IP6_NF_TARGET_HL=y
+          CONFIG_IP_SET=y
+          CONFIG_IP_SET_BITMAP_IP=y
+          CONFIG_IP_SET_BITMAP_IPMAC=y
+          CONFIG_IP_SET_BITMAP_PORT=y
+          CONFIG_IP_SET_HASH_IP=y
+          CONFIG_IP_SET_HASH_IPMAC=y
+          CONFIG_IP_SET_HASH_IPMARK=y
+          CONFIG_IP_SET_HASH_IPPORT=y
+          CONFIG_IP_SET_HASH_IPPORTIP=y
+          CONFIG_IP_SET_HASH_IPPORTNET=y
+          CONFIG_IP_SET_HASH_MAC=y
+          CONFIG_IP_SET_HASH_NET=y
+          CONFIG_IP_SET_HASH_NETNET=y
+          CONFIG_IP_SET_HASH_NETPORT=y
+          CONFIG_IP_SET_HASH_NETPORTNET=y
+          CONFIG_IP_SET_HASH_NETIFACE=y
+          CONFIG_IP_SET_LIST_SET=y
+          CONFIG_NETFILTER_XT_SET=y
+          CONFIG_TCP_CONG_CUBIC=y
+          CONFIG_TCP_CONG_VEGAS=y
+          CONFIG_TCP_CONG_VENO=y
+          CONFIG_TCP_CONG_YEAH=y
+          CONFIG_TCP_CONG_ILLINOIS=y
+          CONFIG_TCP_CONG_LP=y
+          CONFIG_TCP_CONG_SCALABLE=y
+          CONFIG_TCP_CONG_HTCP=y
+          # Extra CPU governors & I/O schedulers
+          CONFIG_CPU_FREQ_GOV_PERFORMANCE=y
+          CONFIG_CPU_FREQ_GOV_CONSERVATIVE=y
+          CONFIG_IOSCHED_BFQ=y
+          CONFIG_BFQ_GROUP_IOSCHED=y
+          CONFIG_MQ_IOSCHED_KYBER=y
+          CONFIG_MQ_IOSCHED_DEADLINE=y
+          # Memory & swap (zswap/z3fold rely on FRONTSWAP above)
+          CONFIG_SWAP=y
+          CONFIG_KSM=y
+          CONFIG_ZSWAP=y
+          CONFIG_Z3FOLD=y
+          CONFIG_ZBUD=y
+          CONFIG_CRYPTO_LZO=y
+          # Network filesystems (CIFS/SMB)
+          CONFIG_NETWORK_FILESYSTEMS=y
+          CONFIG_CIFS=y
+
+          # --- Tier A: verified-available options (all validated =y by kconfiglib) ---
+          # DDR devfreq governors. MACH_MT6768=y builds drivers/devfreq/helio-dvfsrc-v2,
+          # so these give real DDR frequency governor choice on this SoC.
+          # No frequencies are forced; the driver's own OPP table is respected.
+          CONFIG_DEVFREQ_GOV_SIMPLE_ONDEMAND=y
+          CONFIG_DEVFREQ_GOV_PERFORMANCE=y
+          CONFIG_DEVFREQ_GOV_POWERSAVE=y
+          CONFIG_DEVFREQ_GOV_USERSPACE=y
+          CONFIG_DEVFREQ_GOV_PASSIVE=y
+          # Thermal governors. Hardware protection is PRESERVED: we only add
+          # governor choices, we never remove a cooling device or trip point.
+          # MTK_LEGACY_THERMAL and the stock backward-compatible governor stay on.
+          CONFIG_THERMAL_GOV_STEP_WISE=y
+          CONFIG_THERMAL_GOV_FAIR_SHARE=y
+          CONFIG_THERMAL_GOV_BANG_BANG=y
+          CONFIG_THERMAL_GOV_USER_SPACE=y
+          CONFIG_THERMAL_GOV_POWER_ALLOCATOR=y
+          CONFIG_THERMAL_WRITABLE_TRIPS=y
+          CONFIG_DEVFREQ_THERMAL=y
+          CONFIG_THERMAL_STATISTICS=y
+          # Queue disciplines: CAKE/FQ_CODEL/PIE/CoDel for bufferbloat, NETEM for
+          # testing, plus shaping/classful qdiscs. Existing FQ + HTB are kept.
+          CONFIG_NET_SCH_CAKE=y
+          CONFIG_NET_SCH_FQ_CODEL=y
+          CONFIG_NET_SCH_PIE=y
+          CONFIG_NET_SCH_CODEL=y
+          CONFIG_NET_SCH_NETEM=y
+          CONFIG_NET_SCH_HFSC=y
+          CONFIG_NET_SCH_PRIO=y
+          CONFIG_NET_SCH_SFQ=y
+          CONFIG_NET_SCH_TBF=y
+          CONFIG_NET_SCH_INGRESS=y
+          CONFIG_NET_SCH_MQPRIO=y
+          # Remaining in-tree TCP congestion controls (BIC was already enabled).
+          # BBR stays the default; these are alternatives, not replacements.
+          CONFIG_TCP_CONG_DCTCP=y
+          CONFIG_TCP_CONG_HSTCP=y
+          CONFIG_TCP_CONG_HYBLA=y
+          CONFIG_TCP_CONG_NV=y
+          CONFIG_TCP_CONG_CDG=y
+          # nftables (was completely absent) + IPv6 NAT + TEE target.
+          # iptables/xt compatibility is kept via NFT_COMPAT so Android's
+          # existing netd rules keep working.
+          CONFIG_NF_TABLES=y
+          CONFIG_NF_TABLES_INET=y
+          CONFIG_NFT_COMPAT=y
+          CONFIG_NFT_NAT=y
+          CONFIG_NFT_MASQ=y
+          CONFIG_NFT_REDIR=y
+          CONFIG_NFT_CT=y
+          CONFIG_NFT_COUNTER=y
+          CONFIG_NFT_LOG=y
+          CONFIG_NFT_LIMIT=y
+          CONFIG_NFT_REJECT=y
+          CONFIG_IP6_NF_NAT=y
+          CONFIG_IP6_NF_TARGET_MASQUERADE=y
+          CONFIG_NF_NAT_IPV6=y
+          CONFIG_NETFILTER_XT_TARGET_TEE=y
+          # Extra filesystems for OTG/NAS media.
+          # NFS is NOT enabled: this tree has a latent build bug - fs/nfs/client.c
+          # sets rpc_clnt.cl_softerr, but include/linux/sunrpc/clnt.h has no such
+          # member, so fs/nfs/client.o fails to compile. It has never been built
+          # here (NFS is off in the stock defconfig). Fixing it properly needs a
+          # SUNRPC backport, which is out of scope for a stability-first release.
+          # CONFIG_NFS_FS / NFS_V3 / NFS_V4 stay off; NFSD too.
+          CONFIG_SQUASHFS=y
+          CONFIG_SQUASHFS_XZ=y
+          CONFIG_SQUASHFS_LZ4=y
+          CONFIG_SQUASHFS_ZSTD=y
+          CONFIG_XFS_FS=y
+          CONFIG_BTRFS_FS=y
+          CONFIG_HFSPLUS_FS=y
+          CONFIG_UDF_FS=y
+          CONFIG_JFS_FS=y
+          # Faster kernel decompression at boot (replaces default GZIP).
+          CONFIG_KERNEL_LZ4=y
+          # Deliberately NOT enabled, with reasons:
+          #  ZRAM_MEMORY_TRACKING - depends on DEBUG_FS, which stays off to avoid
+          #    exposing kernel internals; it is a debugging aid, not a user feature.
+          #  NFS_FS/NFSD - broken in this tree (rpc_clnt.cl_softerr missing), see above.
+          #  9P_FS - virtio/plan9 transport, no use on this device.
+          #  NTFS3 / sdfat - not present in this 4.19 tree (would need a backport);
+          #    the in-tree NTFS (read/write) and exFAT drivers already cover this.
           EOF
+          # Record exactly what we request so verification checks our options,
+          # not unrelated stock defconfig entries that Kconfig may drop.
+          cat /tmp/requested-config.txt >> arch/arm64/configs/earth_defconfig
 
       - name: Setup GCC Binutils
         run: |
@@ -133,6 +295,7 @@ jobs:
           export PATH="$PWD/toolchain/gcc64/bin:$PWD/toolchain/gcc32/bin:$PATH"
           cd kernel
           make O=out ARCH=arm64 earth_defconfig
+          set -o pipefail
           make -j$(nproc --all) O=out \
             ARCH=arm64 \
             SUBARCH=arm64 \
@@ -147,25 +310,130 @@ jobs:
             OBJDUMP=llvm-objdump \
             STRIP=llvm-strip \
             KCFLAGS="-Wno-error" \
-            Image.gz-dtb
+            Image.gz-dtb 2>&1 | tee /tmp/compile.log || {
+              echo "::error title=Kernel compile failed::error lines extracted below"
+              grep -nE "error:|fatal error|undefined symbol|undefined reference|duplicate symbol|>>>|defined in|No rule to make target|Error [0-9]" /tmp/compile.log | head -60 | while IFS= read -r l; do
+                printf '::error title=Compile error::%s\n' "$l"
+              done
+              echo "::error title=WireGuard archive contents::$(find out -path '*wireguard*' -name 'built-in.a' -exec llvm-ar t {} \; 2>/dev/null | sort | uniq -c | sort -rn | head -8 | tr '\n' ' ')"
+              tail -n 15 /tmp/compile.log | while IFS= read -r l; do
+                printf '::error title=Compile tail::%s\n' "$l"
+              done
+              exit 1
+            }
+
+      - name: Verify kernel, configuration and symbols
+        run: |
+          set -o pipefail
+          cd kernel
+          IMG=out/arch/arm64/boot/Image.gz-dtb
+          test -s "$IMG" || { echo "::error title=Verify::kernel image missing or empty"; exit 1; }
+          echo "Image: $(stat -c%s "$IMG") bytes"
+          echo "== architecture =="
+          llvm-readelf -h out/vmlinux | grep -E "Class|Machine|Type"
+          llvm-readelf -h out/vmlinux | grep -q "AArch64" || { echo "::error title=Verify::not an ARM64 kernel"; exit 1; }
+
+          echo "== configuration verification =="
+          python3 - << 'PYEOF'
+          import re, sys
+          want = []
+          src = open('/tmp/requested-config.txt').read()
+          for line in src.splitlines():
+              m = re.match(r'^CONFIG_([A-Z0-9_]+)=y$', line.strip())
+              if m:
+                  want.append(m.group(1))
+          have = dict(re.findall(r'^CONFIG_([A-Z0-9_]+)=(.*)$', open('out/.config').read(), re.M))
+          # KSU_SUSFS* are knowingly inactive on KernelSU-Next legacy; report, don't fail.
+          inactive = [s for s in want if s.startswith('KSU_SUSFS')]
+          missing = [s for s in want if s not in inactive and have.get(s) != 'y']
+          print(f"checked {len(want)} requested symbols")
+          if inactive:
+              print("NOTE: SUSFS is NOT active on KernelSU-Next legacy; these requested "
+                    "symbols are dropped by Kconfig and are not claimed as working: "
+                    + ", ".join(inactive))
+          if missing:
+              for s in missing:
+                  print(f"::error title=Config not applied::CONFIG_{s} (got {have.get(s,'absent')})")
+              sys.exit(1)
+          print("All requested non-SUSFS symbols are =y in the final .config")
+          PYEOF
+
+          echo "== symbol verification (proves code is really linked in) =="
+          for sym in path_umount ksu_handle_execveat ksu_handle_faccessat ksu_handle_vfs_read ksu_handle_sys_reboot wg_socket_init; do
+            if grep -qw "$sym" out/System.map; then
+              echo "  OK   $sym"
+            else
+              echo "::error title=Missing symbol::$sym not found in System.map"; exit 1
+            fi
+          done
+          echo "== new feature symbols =="
+          for sym in cake_enqueue fq_codel_enqueue nfs_init_sbi nft_chain_lookup devfreq_governor_list thermal_gov_power_allocator; do
+            grep -qw "$sym" out/System.map && echo "  OK   $sym" || echo "  note $sym not a standalone symbol (may be static/inlined)"
+          done
+
+          echo "== source revisions (reproducibility) =="
+          {
+            echo "build_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "kernel_repo=LineageOS/android_kernel_xiaomi_earth branch=lineage-24.0"
+            echo "kernel_sha=$(git rev-parse HEAD)"
+            echo "kernel_version=$(make -s kernelversion 2>/dev/null)"
+            echo "kernelsu_next_sha=$(git -C KernelSU-Next rev-parse HEAD 2>/dev/null)"
+            echo "workflow_sha=${GITHUB_SHA}"
+          } | tee ../REVISIONS.txt
+          cp out/.config ../build-config.txt
+          echo "Verification passed."
 
       - name: Package AnyKernel3 (Redmi 12C / earth only)
         run: |
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git AnyKernel3
-          sed -i 's/do.devicecheck=1/do.devicecheck=1/g' AnyKernel3/anykernel.sh
-          sed -i 's/device.name1=maguro/device.name1=earth/g' AnyKernel3/anykernel.sh
-          sed -i 's/device.name2=toro/device.name2=aether/g' AnyKernel3/anykernel.sh
-          sed -i 's/device.name3=/device.name3=Redmi 12C/g' AnyKernel3/anykernel.sh
-          sed -i 's|block=/dev/block/platform/omap/omap_hsmmc.0/by-name/boot;|block=/dev/block/by-name/boot;|g' AnyKernel3/anykernel.sh
+          sed -i 's/^device.name1=.*/device.name1=earth/' AnyKernel3/anykernel.sh
+          sed -i 's/^device.name2=.*/device.name2=aether/' AnyKernel3/anykernel.sh
+          sed -i 's/^device.name3=.*/device.name3=/' AnyKernel3/anykernel.sh
+          sed -i 's/^device.name4=.*/device.name4=/' AnyKernel3/anykernel.sh
+          sed -i 's/^device.name5=.*/device.name5=/' AnyKernel3/anykernel.sh
           cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
           if [ -f kernel/out/arch/arm64/boot/dtbo.img ]; then
             cp kernel/out/arch/arm64/boot/dtbo.img AnyKernel3/
           fi
           cd AnyKernel3
-          zip -r9 ../Earth-Lineage24-KSUNext-SUSFS.zip . -x ".git*" "README.md" "*placeholder"
+          zip -r9 ../Earth-Lineage24-KSUNext.zip . -x ".git*" "README.md" "*placeholder"
+          cd ..
+          echo "== package contents =="
+          unzip -l Earth-Lineage24-KSUNext.zip
+          unzip -l Earth-Lineage24-KSUNext.zip | grep -q "Image.gz-dtb" || { echo "::error title=Package::kernel image missing from zip"; exit 1; }
+          unzip -p Earth-Lineage24-KSUNext.zip anykernel.sh | grep -E "^device.name1=|^block=|^is_slot_device=" || true
 
       - name: Upload Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
-          name: Earth-Lineage24-KSUNext-SUSFS
-          path: Earth-Lineage24-KSUNext-SUSFS.zip
+          name: Earth-Lineage24-KSUNext
+          path: |
+            Earth-Lineage24-KSUNext.zip
+            REVISIONS.txt
+            build-config.txt
+
+      - name: Publish flashable ZIP to Releases (public download)
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="earth-stable-${{ github.run_number }}"
+          cat > /tmp/notes.md <<'NOTES'
+          Stable kernel for Redmi 12C / POCO C55 (earth), Linux 4.19.325, LineageOS 24.0.
+
+          * KernelSU-Next (legacy) with manual hooks. **SUSFS is not included in this build.**
+          * Tier A: DDR devfreq governors, thermal governors, CAKE/FQ_CODEL/PIE/CoDel,
+            extra TCP congestion controls, nftables + IPv6 NAT, extra filesystems, KERNEL_LZ4.
+          * Verified: ARM64 image, every requested CONFIG, required symbols in System.map.
+
+          Flash `Earth-Lineage24-KSUNext.zip` in TWRP/OrangeFox. Back up your boot partition first.
+          `REVISIONS.txt` and `build-config.txt` record the exact sources and configuration.
+
+          Compilation and symbol checks do not prove runtime behaviour. Flash at your own risk.
+          NOTES
+          gh release create "$TAG" \
+            --repo "${{ github.repository }}" \
+            --title "earth 4.19.325 stable - build ${{ github.run_number }}" \
+            --notes-file /tmp/notes.md \
+            Earth-Lineage24-KSUNext.zip REVISIONS.txt build-config.txt
+          echo "Release: https://github.com/${{ github.repository }}/releases/tag/$TAG"
