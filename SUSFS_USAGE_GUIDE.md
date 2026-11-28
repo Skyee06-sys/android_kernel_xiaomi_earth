@@ -297,6 +297,7 @@ previous kernel. Then remove `/data/adb/modules/susfs4ksu` if needed.
 ## Quick reference
 
 - Releases: <https://github.com/Skyee06-sys/android_kernel_xiaomi_earth/releases>
+- **Changelog** (what changed, why, and expected benefit): [`CHANGELOG.md`](CHANGELOG.md)
 - Full kernel report: [`FINAL_KERNEL_REPORT.md`](FINAL_KERNEL_REPORT.md)
 - Module settings wiki: <https://github.com/sidex15/susfs4ksu-module/wiki>
 - Module source: <https://github.com/sidex15/susfs4ksu-module>
