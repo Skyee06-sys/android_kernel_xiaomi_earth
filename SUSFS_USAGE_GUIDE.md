@@ -192,6 +192,64 @@ what caused any problem.
 
 ---
 
+## 🆕 Network & monitoring features (in BOTH builds)
+
+Added after the first releases. All **30 symbols validated `=y`** against the real
+kernel tree with kconfiglib. These are in the **stable** build too — you don't need
+the SUSFS build to get them.
+
+### Traffic control now actually works
+The qdiscs (CAKE, FQ_CODEL, PIE…) were present but could not be *fed* — there were
+no classifiers or actions. Added `NET_CLS_U32`, `NET_CLS_FLOWER`, `NET_CLS_CGROUP`,
+`NET_ACT_POLICE`, `NET_ACT_MIRRED`. So `tc` filtering/shaping is now usable, e.g.:
+
+```bash
+su -c "tc qdisc add dev wlan0 root cake bandwidth 20mbit"   # fight bufferbloat
+su -c "tc -s qdisc show dev wlan0"                          # read the stats
+```
+
+### Transparent proxy + per-app firewall
+| Feature | What it enables |
+|---|---|
+| `NFT_TPROXY`, `XT_TARGET_TPROXY`, `XT_MATCH_SOCKET` | Transparent proxying — Clash, v2ray, SagerNet |
+| `XT_MATCH_OWNER` | **Per-app (uid) firewall rules** — AFWall+ style |
+| `XT_MATCH_QUOTA`, `XT_MATCH_TIME` | Data caps and time-based rules |
+| `XT_TARGET_NOTRACK` | Bypass conntrack for throughput |
+| `NFT_FIB_*`, `NFT_SOCKET`, `NFT_OSF`, `NF_FLOW_TABLE*`, `NFT_FLOW_OFFLOAD` | Advanced nftables + flow offload |
+
+`NFT_COMPAT` stays on, so Android's own `netd` iptables rules keep working.
+
+### Monitoring — measure instead of guess
+`CPU_FREQ_TIMES`, `TASKSTATS`, `TASK_DELAY_ACCT`, `TASK_XACCT`,
+`TASK_IO_ACCOUNTING`, `SCHEDSTATS`. `DEBUG_FS` stays **off**.
+
+```bash
+su -c "cat /sys/devices/system/cpu/cpufreq/policy0/stats/time_in_state"  # freq residency
+su -c "head -3 /proc/schedstat"                                        # scheduler stats
+```
+
+`time_in_state` is the useful one for battery: it shows how long each frequency
+was actually used, so you can see whether the CPU sits high when idle.
+
+### ⚠️ Bug fixed: BBR was not the default before
+`CONFIG_DEFAULT_TCP_CONG` is a *derived* string — assigning it in defconfig is
+silently ignored, so earlier releases actually used **cubic** while claiming bbr.
+Fixed by selecting `CONFIG_DEFAULT_BBR=y`, and the CI verifier now checks string
+options too (negative-tested). Check yours:
+
+```bash
+cat /proc/sys/net/ipv4/tcp_congestion_control    # should now say: bbr
+```
+
+If you are on `earth-stable-20` or older, this will likely say `cubic` — that is
+the bug, not a misconfiguration on your side.
+
+**Not added, on purpose:** `SCHED_AUTOGROUP` (can hurt Android responsiveness),
+`F2FS_CHECK_FS` (debug overhead), `BLK_WBT` / `F2FS_FS_COMPRESSION`
+(behaviour-changing → separate experimental build only).
+
+---
+
 ## Testing whether hiding works
 
 1. Install a root-detection app (a root checker, or a banking app you use).
