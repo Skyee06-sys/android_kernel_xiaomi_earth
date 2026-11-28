@@ -8,6 +8,7 @@ on:
     # (and must not publish a redundant release).
     paths-ignore:
       - '**.md'
+      - 'tools/**'
 
 jobs:
   build:
