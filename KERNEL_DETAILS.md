@@ -1,187 +1,171 @@
-# Redmi 12C (earth) — KernelSU-Next Manager + Full Kernel Details
+# 📗 Kernel Details — earth (Redmi 12C / POCO C55)
 
-Everything below reflects what is actually merged on `main` (commit `13e8442`) and verified by green CI builds.
+Technical reference for the current builds. Rewritten from verified repository and
+source facts; the previously recorded manager-certificate details are preserved
+below because they remain useful.
 
----
-
-## 1. The Manager APK (install this after flashing the kernel)
-
-**Latest stable: KernelSU-Next v3.4.2** — released 2026-10-13, versionCode **33355**.
-
-| Variant | File | Size | Link |
-|---|---|---|---|
-| **Standard (recommended)** | `KernelSU_Next_v3.4.2_33355-release.apk` | 16,682,167 B (~15.9 MB) | [Download](https://github.com/KernelSU-Next/KernelSU-Next/releases/download/v3.4.2/KernelSU_Next_v3.4.2_33355-release.apk) |
-| Spoofed (disguised app name) | `KernelSU_Next_v3.4.2-spoofed_33355-release.apk` | 16,684,355 B (~15.9 MB) | [Download](https://github.com/KernelSU-Next/KernelSU-Next/releases/download/v3.4.2/KernelSU_Next_v3.4.2-spoofed_33355-release.apk) |
-
-Release page (all assets + changelog): <https://github.com/KernelSU-Next/KernelSU-Next/releases/tag/v3.4.2>
-
-> **Why links instead of an attached file:** my sandbox can reach `github.com` and `api.github.com`, but GitHub serves release binaries from `objects.githubusercontent.com`, which is outside my network allowlist. Both download attempts returned `302` with 0 bytes. The links above are the official maintainer assets.
-
-### Which variant should you use?
-Your kernel authenticates the manager by its **signing certificate**, not by app name:
-
-- Expected certificate size: `0x3e6` (998 bytes)
-- Expected SHA-256: `79e590113c4c4c0c222978e413a5faa801666957b1212a328e46c00c69821bf7`
-
-Detection is signature-based (there is no hardcoded package name), so both official assets are accepted. Use the **standard** APK unless you specifically want the manager to appear under a disguised name — then use the spoofed one. Do **not** use a random re-signed APK from a mirror; it will fail the certificate check and root will not be granted.
+> 📌 History: this document previously described commit `13e8442` and the
+> pre-SUSFS artifact-only workflow. That information is superseded — releases are
+> now published publicly and SUSFS builds successfully. See
+> [CHANGELOG.md](CHANGELOG.md) for the progression.
 
 ---
 
-## 2. The kernel zip
+## 1. Current builds
 
-Built by GitHub Actions and attached as an artifact named **`Earth-Lineage24-KSUNext-SUSFS`** (~15.2 MB, contains the AnyKernel3 flashable zip).
+| Build | Tag | CI run | ZIP size | Result |
+|---|---|---|---|---|
+| **Stable** | [`earth-stable-22`](https://github.com/Skyee06-sys/android_kernel_xiaomi_earth/releases/tag/earth-stable-22) | [#22 · 46137709296](https://github.com/Skyee06-sys/android_kernel_xiaomi_earth/actions/runs/46137709296) | 17,295,388 B | ✅ success, 0 annotations |
+| **SUSFS experimental** | [`earth-susfs-5`](https://github.com/Skyee06-sys/android_kernel_xiaomi_earth/releases/tag/earth-susfs-5) | [#5 · 46137717612](https://github.com/Skyee06-sys/android_kernel_xiaomi_earth/actions/runs/46137717612) | 17,305,967 B | ✅ success, 0 annotations |
 
-| Run | Branch | Result | Artifact size |
-|---|---|---|---|
-| [#11 — 46109516160](https://github.com/Skyee06-sys/android_kernel_xiaomi_earth/actions/runs/46109516160) | feature branch | ✅ success, **0 warnings** | 15,973,662 B |
-| [#12 — 46111066184](https://github.com/Skyee06-sys/android_kernel_xiaomi_earth/actions/runs/46111066184) | `main` | latest post-merge build | ~15.97 MB |
+Downloads are **public release assets — no GitHub sign-in**. Each release ships
+`REVISIONS.txt` and `build-config.txt`.
 
-Open the run page → scroll to **Artifacts** → download. GitHub requires you to be signed in to download artifacts.
-
----
-
-## 3. Install order
-
-1. **Back up your boot partition** (TWRP/OrangeFox → Backup → Boot). This is your undo button.
-2. Flash `Earth-Lineage24-KSUNext-SUSFS.zip` in custom recovery. AnyKernel3 patches your existing boot image and has a device check for **earth** (Redmi 12C) so it refuses to flash on the wrong phone.
-3. Reboot to system.
-4. Install the manager APK from section 1.
-5. Open the manager — it should report **Working** and show the kernel-side KernelSU version.
-6. Grant root per-app in the manager's **Superuser** tab.
-
-If the manager says "Not installed", the kernel did not boot from the flashed image — restore your boot backup and re-check.
+> ℹ️ Actions artifacts are no longer the distribution channel: they require
+> sign-in and expire after 90 days.
 
 ---
 
-## 4. What was added to the kernel — full details
+## 2. Base and toolchain
 
-### 4.1 Base
-- Source: LineageOS `android_kernel_xiaomi_earth`, branch **lineage-24.0**
-- Kernel version: **Linux 4.19.325**, arm64
-- Toolchain: clang + `ld.lld` + LLVM, with AOSP GCC 4.9 aarch64/arm binutils
-- Packaging: AnyKernel3 (device-locked to earth)
-
-### 4.2 Root — KernelSU-Next (`legacy` branch)
-The `legacy` branch is the non-GKI line, which is what a 4.19 device kernel needs.
-
-Integration:
-- Cloned and symlinked to `drivers/kernelsu`
-- Wired in via `source "drivers/kernelsu/Kconfig"` and `obj-$(CONFIG_KSU) += kernelsu/`
-
-Config:
-```
-CONFIG_KSU=y
-CONFIG_KSU_MANUAL_HOOK=y
-CONFIG_KSU_KPROBES_HOOK=n
-```
-
-**Manual hooks (5 syscall entry points)** — chosen over kprobes because kprobes are unreliable/unavailable on many 4.19 device kernels, and manual hooks are deterministic with no probe overhead:
-
-| Kernel function | File | KSU hook installed |
+| Item | Value | Evidence |
 |---|---|---|
-| `do_execveat_common` | `fs/exec.c` | `ksu_handle_execveat` / `ksu_handle_execveat_sucompat` |
-| `do_faccessat` | `fs/open.c` | `ksu_handle_faccessat` |
-| `vfs_read` | `fs/read_write.c` | `ksu_handle_vfs_read` |
-| `vfs_statx` | `fs/stat.c` | `ksu_handle_stat` |
-| `SYSCALL_DEFINE4(reboot, …)` | `kernel/reboot.c` | `ksu_handle_sys_reboot` |
+| Kernel source | `LineageOS/android_kernel_xiaomi_earth` @ **`lineage-24.0`** | workflow clone step |
+| Kernel version | **Linux 4.19.325** | `Makefile`: `VERSION=4 PATCHLEVEL=19 SUBLEVEL=325` |
+| Architecture | **arm64** | CI asserts `vmlinux` is AArch64 |
+| Device config | `earth_defconfig` | `arch/arm64/configs/earth_defconfig` |
+| SoC | MT6768 / Helio G85 | `MACH_MT6768=y`, `MTK_PLATFORM="mt6768"` |
+| CPU topology | 2× Cortex-A75 + 6× Cortex-A55 | `mt6768.dts`: A75 `capacity=1024 dpc=275`; A55 `495 / 85` |
+| GPU | Mali **Valhall r32p1** | `MTK_GPU_VERSION="mali valhall r32p1"` |
+| Compiler | **clang + ld.lld** | `CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm …` |
+| Binutils | aarch64 / arm GCC **4.9** prebuilts | `toolchain/gcc64`, `toolchain/gcc32` |
+| Kernel image | `Image.gz-dtb` (DTB appended) | `CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE=y`, names `mediatek/mt6768` |
+| Packaging | AnyKernel3, locked to `earth` / `aether` | `anykernel.sh` device names |
+| Preemption / timer | `PREEMPT=y`, `HZ=250` | resolved config |
 
-All hooks are wrapped in `#ifdef CONFIG_KSU`, so they compile out cleanly if root is disabled. The reboot hook is also what KernelSU's Kbuild greps for to validate that manual hooking succeeded.
-
-**Reported version:** `30000 + commit_count + 289`, deliberately offset so the kernel-side version lines up with the manager's versionCode. The Kbuild detects the shallow clone and runs `git fetch --unshallow` automatically, so the number is real, not `1`.
-
-**`path_umount` backport:** KernelSU-Next calls `path_umount()` (a Linux 5.9 API) for its umount feature. 4.19 does not have it, which caused the original `ld.lld: undefined symbol: path_umount`. I backported `can_umount()` + `path_umount()` into `fs/namespace.c` (idempotent, guarded so it never double-applies).
-
-### 4.3 Network & connectivity
-| Config | What it gives you |
-|---|---|
-| `CONFIG_WIREGUARD=y` | WireGuard VPN — uses earth's **in-tree v1.0.0** driver at `drivers/net/wireguard` |
-| `CONFIG_IP_NF_TARGET_TTL=y` | IPv4 TTL target — set packet TTL (commonly used so tethered traffic is treated like on-device traffic) |
-| `CONFIG_IP6_NF_TARGET_HL=y` | IPv6 hop-limit target — same idea for IPv6 |
-| `CONFIG_IP_SET=y` + 16 set types | ipset: bitmap ip/ipmac/port, hash ip/ipmac/ipmark/ipport/ipportip/ipportnet/mac/net/netnet/netport/netportnet/netiface, list:set |
-| `CONFIG_NETFILTER_XT_SET=y` | iptables `-m set` match, so ipset rules actually work |
-| `CONFIG_TCP_CONG_ADVANCED=y` | Unlocks selectable congestion controls |
-| `CONFIG_TCP_CONG_BBR=y` + `CONFIG_DEFAULT_TCP_CONG="bbr"` | BBR as the default — better throughput/latency on lossy mobile links |
-| `CONFIG_NET_SCH_FQ=y` | FQ qdisc, the pacing qdisc BBR wants |
-| Extra congestion algos | CUBIC, VEGAS, VENO, YEAH, ILLINOIS, LP, SCALABLE, HTCP, WESTWOOD |
-
-### 4.4 CPU, scheduling & I/O
-| Config | Effect |
-|---|---|
-| `CONFIG_CPU_FREQ_DEFAULT_GOV_SCHEDUTIL=y` | schedutil default — EAS-aware, best battery/perf balance |
-| `CONFIG_CPU_FREQ_GOV_PERFORMANCE=y` | performance governor available |
-| `CONFIG_CPU_FREQ_GOV_CONSERVATIVE=y` | conservative governor available |
-| `CONFIG_IOSCHED_BFQ=y` + `CONFIG_BFQ_GROUP_IOSCHED=y` | BFQ I/O scheduler with cgroup support — smoother under heavy I/O |
-| `CONFIG_MQ_IOSCHED_KYBER=y`, `CONFIG_MQ_IOSCHED_DEADLINE=y` | blk-mq schedulers for UFS/eMMC |
-| `CONFIG_NO_HZ_IDLE=y` | tickless idle — fewer wakeups, better idle battery |
-| `CONFIG_HZ_250=y` | 250 Hz tick — lower overhead than 1000 Hz |
-| `CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y` | `-O2` rather than size optimisation |
-
-### 4.5 Memory & ZRAM
-| Config | Effect |
-|---|---|
-| `CONFIG_ZRAM=y`, `CONFIG_ZSMALLOC=y` | compressed RAM swap |
-| `CONFIG_CRYPTO_LZ4=y`, `CONFIG_CRYPTO_ZSTD=y`, `CONFIG_CRYPTO_LZO=y` | fast (LZ4) / high-ratio (ZSTD) ZRAM compressors |
-| `CONFIG_SWAP=y` | swap support |
-| `CONFIG_KSM=y` | kernel samepage merging — dedupes identical pages |
-| `CONFIG_ZSWAP=y` + `CONFIG_Z3FOLD=y` + `CONFIG_ZBUD=y` | compressed swap cache with both allocators |
-| `CONFIG_FRONTSWAP=y`, `CONFIG_CLEANCACHE=y` | required backend for zswap/z3fold + clean page cache offload |
-
-### 4.6 Filesystems
-| Config | Effect |
-|---|---|
-| `CONFIG_NETWORK_FILESYSTEMS=y` | unlocks network fs menu |
-| `CONFIG_CIFS=y` | mount SMB/Windows/NAS shares |
-| already stock | exFAT, NTFS (read/write), EROFS |
-
-### 4.7 SUSFS — honest status: **present but inactive**
-The workflow copies SUSFS sources and sets `CONFIG_KSU_SUSFS*`, but SUSFS also requires the KernelSU-side patch (`10_enable_susfs_for_ksu.patch`). That patch targets **original KernelSU's** file layout, not KernelSU-Next, so it is not applied. Consequently:
-
-- Kconfig drops the `KSU_SUSFS` options (the symbols don't exist on KernelSU-Next `legacy`)
-- **SUSFS hiding features do not work** on this build
-- **KernelSU root itself works normally**
-
-This is documented in the workflow rather than half-ported, because a partial port produces undefined-symbol link failures. If you want real SUSFS, it needs a deliberate port of the SUSFS Kconfig + `susfs.o` build gate + `susfs_is_current_ksu_domain()` / `susfs_is_current_zygote_domain()` definitions into KernelSU-Next.
-
-Also note `CONFIG_KSU_SUSFS_SUS_SU=n` — SUS_SU is unsupported on non-GKI kernels.
+⚠️ Toolchain versions are **not yet pinned** — tracked as
+[KI-007](KNOWN_ISSUES.md), scheduled for Phase B.
 
 ---
 
-## 5. Bugs found and fixed along the way
+## 3. Root: KernelSU-Next
 
-| Bug | Cause | Fix |
+| Item | Value |
+|---|---|
+| Branch | **`legacy`** (manual hooks) |
+| Config | `KSU=y`, `KSU_MANUAL_HOOK=y`, `KSU_KPROBES_HOOK=n` |
+| Integration | cloned to `KernelSU-Next`, symlinked as `drivers/kernelsu`, Kconfig/Makefile hooked in |
+| Required backport | **`path_umount()`** — a Linux 5.9 API absent from 4.19; without it the kernel **does not link** |
+| LKM mode | 🔴 **Unsupported** — LKM targets 5.10+, there is no 4.19 LKM |
+
+### Manager APK (preserved verified details)
+
+**KernelSU-Next v3.4.2**, versionCode **33355**.
+
+| Variant | File | Size |
 |---|---|---|
-| `ld.lld: undefined symbol: path_umount` | KSU-Next calls a 5.9 API absent in 4.19 | Backported `can_umount()` + `path_umount()` into `fs/namespace.c` |
-| `ld.lld: duplicate symbol: wg_*` (every WireGuard symbol) | earth already ships WireGuard in-tree; a second copy was added at `net/wireguard`, building the driver twice | Removed the redundant `wireguard-linux-compat` copy; `CONFIG_WIREGUARD=y` enables the in-tree driver |
-| Wrong KSU hook symbol | `KSU_KPROBES_HOOK` typo / wrong mode selected | Corrected to manual hook mode |
-| AnyKernel3 device check | template still listed maguro/toro/toroplus/tuna | `device.nameN` set for earth |
-| Node.js 20 deprecation warning | `actions/upload-artifact@v4` targets node20 | Bumped to `@v7` (native node24) — annotations now empty |
-| Silent "exit code 2" failures | build errors were swallowed | `set -o pipefail` + `tee` + `::error` annotations surfacing real compiler/linker messages |
+| **Standard (recommended)** | `KernelSU_Next_v3.4.2_33355-release.apk` | 16,682,167 B |
+| Spoofed (disguised name) | `KernelSU_Next_v3.4.2-spoofed_33355-release.apk` | 16,684,355 B |
+
+<https://github.com/KernelSU-Next/KernelSU-Next/releases/tag/v3.4.2>
+
+**Authentication is by signing certificate, not package name:**
+
+| Property | Value |
+|---|---|
+| Certificate size | `0x3e6` (998 bytes) |
+| Certificate SHA-256 | `79e590113c4c4c0c222978e413a5faa801666957b1212a328e46c00c69821bf7` |
+
+Both official variants are therefore accepted. A re-signed APK from a mirror will
+**fail** the certificate check and root will not be granted. Do not install both
+variants at once.
 
 ---
 
-## 6. Build provenance
+## 4. SUSFS (experimental build only)
 
-| Run | Branch | Purpose | Result |
-|---|---|---|---|
-| #3 · 46072259352 | main | `path_umount` fix | ✅ success |
-| #9 · 46084306419 | feature branch | feature pack, WireGuard fix | ✅ success (14m25s) |
-| #10 · 46085612591 | main | post-merge verification | ✅ success |
-| #11 · 46109516160 | feature branch | upload-artifact v7 | ✅ success, 0 warnings |
-| #12 · 46111066184 | main | current post-merge build | latest |
+| Item | Value |
+|---|---|
+| Version | **v1.5.5** (`include/linux/susfs.h`) |
+| Upstream | `simonpunk/susfs4ksu` @ `kernel-4.19` (GitLab), fallback mirror `Zhanfg/susfs4ksu` |
+| Port | `scripts/port_susfs.py` — idempotent, anchor-asserting, self-verifying |
+| Options | **13 `=y`**, **3 `=n`** |
+| Off | `SUS_SU` (needs kprobes), `SUS_OVERLAYFS` (not on 4.19), `HAS_MAGIC_MOUNT` (KSU-Next legacy) |
+| Module | `sidex15/susfs4ksu-module` **v1.5.2+_R28** (requires ≥1.5.2 → compatible) |
+| Local symbol check | `check_symbols()` — **27/27** resolved before CI |
 
-Merged pull requests: **#1** (`path_umount`), **#2** (feature packs + WireGuard fix), **#3** (upload-artifact bump).
+### Why a custom port was necessary
 
-Every feature config listed above was validated with `kconfiglib` against the real earth defconfig — all resolve to `y` (dependencies like `FRONTSWAP` for zswap and `NETWORK_FILESYSTEMS` for CIFS were added explicitly so nothing silently dropped out).
+KernelSU-Next `legacy` ships **no** SUSFS support, and the upstream
+`10_enable_susfs_for_ksu.patch` targets the flat original-KernelSU layout. The
+4.19 kernel patch also needed repairs because earth carries backports:
+
+| Anchor | Repair |
+|---|---|
+| `fs_context` backport | `vfs_create_mount(fc)` signature |
+| `vfsmount` KABI | `ANDROID_KABI_USE(4, u64 susfs_mnt_id_backup)` |
+| `task_struct` KABI | `ANDROID_KABI_USE(8, u64 susfs_last_fake_mnt_id)` |
+| `task_mmu.c` | anchor at `pkeys.h` |
+| Upstream hunk #8 | applied with fuzz and dropped the `CL_ZYGOTE_COPY_MNT_NS` guard — script restores it |
+| API drift | patch called `susfs_try_umount_all`; v1.5.5 defines `susfs_try_umount` → `reconcile_api()` |
+
+**Runtime hiding is unverified.** The kernel is only half of SUSFS; the userspace
+module supplies the hide-list. See [SUSFS_USAGE_GUIDE.md](SUSFS_USAGE_GUIDE.md).
 
 ---
 
-## 7. Quick sanity checks after flashing
+## 5. Configuration summary
+
+| | Stable | SUSFS |
+|---|---|---|
+| Requested options | **147** | **163** |
+| Changed vs stock defconfig | 142 | 142 + SUSFS |
+| Already stock (assertions only) | 5 | 5 |
+
+Full before/after table: [KERNEL_CONFIG.md](KERNEL_CONFIG.md).
+Feature-by-feature status with source evidence: [FEATURES.md](FEATURES.md).
+
+---
+
+## 6. Verification performed by CI
+
+| Check | Enforced |
+|---|---|
+| Non-empty `Image.gz-dtb` | ✅ |
+| `vmlinux` is AArch64 | ✅ |
+| Every requested `=y` symbol present in final `.config` | ✅ |
+| Every requested **string/numeric** value matches | ✅ |
+| `path_umount`, `ksu_handle_execveat`, `ksu_handle_faccessat`, `ksu_handle_vfs_read`, `ksu_handle_sys_reboot`, `wg_socket_init` in `System.map` | ✅ |
+| SUSFS: `susfs_init`, `susfs_is_current_ksu_domain`, `susfs_is_current_zygote_domain`, `ksu_try_umount`, `susfs_try_umount` | ✅ |
+| ZIP contains `Image.gz-dtb`; device locked to `earth`/`aether` | ✅ |
+
+**Not verified:** boot, performance, battery, thermals, runtime hiding.
+
+---
+
+## 7. Runtime checks
 
 ```bash
-adb shell uname -r          # expect 4.19.325…
-adb shell getprop ro.product.device   # expect earth
+uname -r                                            # 4.19.325…
+cat /proc/sys/net/ipv4/tcp_congestion_control        # bbr
+su -c "dmesg | grep 'energy model register'"         # EAS initialised (MTK driver)
+su -c "dmesg | grep -i susfs"                        # experimental build only
+sh tools/verify_device.sh                            # full read-only report
 ```
-Then open the KernelSU-Next manager: it should show **Working**. Grant an app root and confirm with:
-```bash
-adb shell su -c id          # expect uid=0(root)
-```
+
+---
+
+## 8. Environment note (preserved)
+
+Release binaries are served from `objects.githubusercontent.com`, which is outside
+this project's automation allowlist; direct asset downloads return `302` with 0
+bytes. Consequently **facts are recorded into `REVISIONS.txt` at build time**
+(kernel/KSU SHAs, and for SUSFS the version, remote and `sus_su` state) so they can
+be read without downloading binaries. Official maintainer links are always used
+rather than re-hosted files.
+
+---
+
+## 🔗 Related
+
+[FEATURES.md](FEATURES.md) · [KERNEL_CONFIG.md](KERNEL_CONFIG.md) · [BUILD_GUIDE.md](BUILD_GUIDE.md) · [INSTALLATION.md](INSTALLATION.md) · [COMPATIBILITY.md](COMPATIBILITY.md) · [CHANGELOG.md](CHANGELOG.md)

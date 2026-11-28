@@ -81,14 +81,24 @@ The ZIP is locked to `earth`/`aether` and **refuses to flash** elsewhere.
 
 | Document | What's inside |
 |---|---|
-| 📋 **[CHANGELOG.md](CHANGELOG.md)** | Every change with **why** it was made and **what it should improve** |
+| 📋 **[CHANGELOG.md](CHANGELOG.md)** | Every change with **why** and **expected benefit** |
+| ✨ **[FEATURES.md](FEATURES.md)** | Feature manifest — status + **source-code evidence** |
+| ⚙️ **[KERNEL_CONFIG.md](KERNEL_CONFIG.md)** | **Before/after** config comparison, generated from the tree |
+| 🛡️ **[SECURITY.md](SECURITY.md)** | Hardening state, gaps, root attack surface |
+| 📊 **[PERFORMANCE.md](PERFORMANCE.md)** | Mechanisms and **how to measure** — no unmeasured claims |
+| 🔌 **[COMPATIBILITY.md](COMPATIBILITY.md)** | Device / ROM / component compatibility with evidence |
+| 📲 **[INSTALLATION.md](INSTALLATION.md)** | Flash procedure, verification, rollback |
+| 🏗️ **[BUILD_GUIDE.md](BUILD_GUIDE.md)** | CI pipeline + validating configs without compiling |
+| 🐞 **[KNOWN_ISSUES.md](KNOWN_ISSUES.md)** | Open limitations, tracked IDs |
+| 🤝 **[CONTRIBUTING.md](CONTRIBUTING.md)** | Engineering rules and the doc-sync mandate |
+| 📖 [SUSFS_USAGE_GUIDE.md](SUSFS_USAGE_GUIDE.md) | SUSFS install, WebUI config, all 21 module knobs |
+| 📗 [KERNEL_DETAILS.md](KERNEL_DETAILS.md) | Technical reference, toolchain, manager certificate |
+| 🗺️ [FEATURES_LEFT.md](FEATURES_LEFT.md) | Roadmap — approved phases and what remains |
+| 🔍 [FINAL_KERNEL_REPORT.md](FINAL_KERNEL_REPORT.md) | The original 9-step audit |
 | 🚀 [stable-22](changelog/earth-stable-22.md) · 🧪 [susfs-5](changelog/earth-susfs-5.md) | Per-release deep dives |
-| 🏗️ **[BUILD-LEDGER.md](changelog/BUILD-LEDGER.md)** | Every CI run **including failures**, with root-cause post-mortems |
-| ✨ [FEATURES.md](changelog/FEATURES.md) | Feature → why → expected benefit |
+| 🏗️ [BUILD-LEDGER.md](changelog/BUILD-LEDGER.md) | Every CI run **including failures**, with post-mortems |
 | ❌ [DISABLED.md](changelog/DISABLED.md) | Declined features with reasons |
 | 📝 [TEMPLATE.md](changelog/TEMPLATE.md) | How the next entry gets written |
-| 📖 **[SUSFS_USAGE_GUIDE.md](SUSFS_USAGE_GUIDE.md)** | ROM compatibility, install order, WebUI config, all 21 module knobs |
-| 🔍 [FINAL_KERNEL_REPORT.md](FINAL_KERNEL_REPORT.md) | The full 9-step audit |
 | 🧰 `tools/verify_device.sh` | **Read-only** runtime report for Termux |
 
 ---

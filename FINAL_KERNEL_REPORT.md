@@ -203,7 +203,7 @@ drivers (evaluated and available, but not requested).
 | **NFS / NFSD** | present but **broken** | **Disabled** | `rpc_clnt.cl_softerr` missing → `fs/nfs/client.o` fails to compile (caught by CI run 46114067461). Adding just the field would make `SOFTERR` silently ineffective; a real fix needs a SUNRPC backport. |
 | **ZRAM_MEMORY_TRACKING** | present | **Disabled** | Depends on `DEBUG_FS`, kept off to avoid exposing kernel internals. Debug aid, not a user feature. |
 | **9P_FS** | present | **Disabled** | virtio/Plan9 transport — no use on a phone. |
-| **LTO_CLANG / CFI_CLANG / SHADOW_CALL_STACK** | not supported in this tree/config | **Left off** | Stock defconfig requests some of these but Kconfig drops them. Not forced. |
+| **LTO_CLANG / CFI_CLANG / SHADOW_CALL_STACK** | **available** with clang+lld (corrected) | **Left off — Experimental (Phase C3)** | Earlier text said Kconfig drops them. That was wrong: they resolved `n` only because the local probe used gcc. `arch/arm64/Kconfig:61` selects `ARCH_SUPPORTS_LTO_CLANG`, `:63` selects `ARCH_SUPPORTS_SHADOW_CALL_STACK`, and `asm/scs.h` exists. CI uses clang+lld, so they are selectable. Held for isolated experimental testing. |
 | **SUS_SU** | guarded | **Disabled** | Needs kprobes; unsupported on non-GKI. |
 
 ---

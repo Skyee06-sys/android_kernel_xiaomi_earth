@@ -49,6 +49,69 @@ was made and **what it should improve**. Newest first.
 
 ---
 
+## [Phase A] — Documentation framework — 2026-11-28
+
+**Documentation only. No kernel, config or workflow change. No build triggered.**
+
+### 📚 Added — the missing documentation set
+
+Nine of the twelve required documents did not exist. Created:
+`FEATURES.md`, `KERNEL_CONFIG.md`, `SECURITY.md`, `PERFORMANCE.md`,
+`COMPATIBILITY.md`, `INSTALLATION.md`, `BUILD_GUIDE.md`, `KNOWN_ISSUES.md`,
+`CONTRIBUTING.md`.
+
+- **Why:** documentation was scattered across a report and a changelog, with no
+  dedicated security, compatibility, installation or contribution reference. The
+  project could not be audited or contributed to reliably.
+- **Benefit:** every claim now has a home with a defined status, and the doc-sync
+  rule is written down as a merge gate.
+
+### 📚 Added — evidence-based feature manifest
+
+`FEATURES.md` gives every feature an explicit status (**Enabled / Implemented /
+Available-but-disabled / Experimental / Planned / Unsupported**) and a
+**source-code citation**.
+
+Notable verified findings recorded there:
+- **EAS is genuinely active**, not merely compiled: `kernel/sched/fair.c:7553`
+  `find_energy_efficient_cpu()` gated at `:7702`, with the energy model registered
+  by MTK's own driver at
+  `drivers/misc/mediatek/base/power/cpufreq_v1/src/v2/mtk_cpufreq_main.c:1302`.
+  Asymmetric capacities confirmed in `mt6768.dts` (A75 1024 / A55 495).
+- **`UCLAMP_BUCKETS_COUNT` is 5**, at the bottom of its permitted **5–20** range
+  (`init/Kconfig:726`).
+
+### 📚 Added — generated before/after config manifest
+
+`KERNEL_CONFIG.md` compares all **147** requested options: stock defconfig value
+→ built value. **142** differ; **5** were already stock.
+
+### 🐛 Fixed — three documentation inaccuracies
+
+| Claim | Correction | Evidence |
+|---|---|---|
+| "LTO_CLANG / CFI / SHADOW_CALL_STACK are dropped by Kconfig" | **Available**, not absent. They resolved `n` only because the probe used gcc; arm64 selects `ARCH_SUPPORTS_LTO_CLANG` (`arch/arm64/Kconfig:61`) and `ARCH_SUPPORTS_SHADOW_CALL_STACK` (`:63`), and `asm/scs.h` exists | CI uses clang+lld, so they are genuinely selectable |
+| "F2FS_STAT_FS / XATTR / SECURITY could be added" | **Already stock `=y`** — no change was needed | resolved config |
+| Group 4 "added SCHEDSTATS" | **Already stock** (`earth_defconfig:378`) — the request was a redundant assertion, not a new feature | stock defconfig |
+
+### 📚 Rewritten — stale documents
+
+- `KERNEL_DETAILS.md` referenced commit `13e8442` and the artifact-only,
+  pre-SUSFS workflow. Rewritten against current releases; the verified manager
+  signing-certificate details and the environment note are **preserved**.
+- `FEATURES_LEFT.md` still presented completed Tier A work as pending. Converted
+  into a phase roadmap, with the original audit findings preserved as a
+  historical record and marked complete.
+
+### 📊 Verified
+
+- 9 new documents + 2 rewrites; README index and this changelog updated in the
+  same commit
+- All relative links resolve; no malformed tables
+- Doc-only change → `paths-ignore` covers `**.md`, so **no rebuild** was triggered
+
+---
+
 ## [stable-22] + [susfs-5] — 2026-11-28
 
 **Both builds.** Source: `2fc7655` · PR [#12](https://github.com/Skyee06-sys/android_kernel_xiaomi_earth/pull/12)
